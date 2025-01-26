@@ -18,6 +18,8 @@ from matplotlib import pyplot as plt
 import obs_syn
 import onesine
 import tf_cover
+from tslearn.utils import to_time_series_dataset
+from tslearn.clustering import TimeSeriesKMeans
 
 # Number of training episodes
 N_TRAIN = 18
@@ -132,6 +134,43 @@ def action_preprocess_experiments(
         inplace=True,
     )
     joblib.dump(merged_df, preprocessed_dataset_path)
+
+def action_one_step_DTW_K_means_clustering(
+    dataset_path: pathlib.Path,
+    cluster_pred,
+    clusters,
+    k: int,
+    features_to_cluster: list,  # List of features to cluster, e.g. ['joint_pos', 'joint_vel']
+    
+):
+    dataset = joblib.load(dataset_path)
+    wh_data = []
+    for cluster_base in features_to_cluster:
+        ts_data=[]
+        for part in cluster_base:
+            x=[]
+            for i, dataset_ep in dataset.groupby(by=["serial_no", "load", "episode"]):
+                x.append(dataset_ep[part].to_list())
+            ts_data.append(to_time_series_dataset(x))
+        wh_data.append(np.concatenate(ts_data,2))
+    
+    
+
+    km = TimeSeriesKMeans(n_clusters=k, verbose=True, max_iter=10, 
+                          metric='dtw', random_state=0, n_jobs=2)
+    y_preds_dict={}
+    centers_dict={}
+    for i, cluster_base in enumerate(wh_data):
+        y_pred=km.fit_predict(cluster_base)
+        for j in range(k):
+            centers_dict['cluster'+str(i)+'center'+str(j)]=[km.cluster_centers_[i]]
+        y_preds_dict['cluster'+str(i)]=y_pred
+
+    df = pandas.DataFrame(centers_dict)
+    joblib.dump(df, clusters)
+    df = pandas.DataFrame(y_preds_dict)
+    joblib.dump(df, y_preds_dict)
+
 
 
 def action_compute_phase(
