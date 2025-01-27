@@ -33,6 +33,49 @@ def task_preprocess_experiments():
         "clean": True,
     }
 
+def task_one_step_clustering():
+    """Task to perform time series clustering using DTW with K-means."""
+    
+    preprocessed_dataset = WD.joinpath("build", "dataset.pickle")
+    #cluster_pred = WD.joinpath("build", "pred.pickle")
+    clusters = WD.joinpath("build", "DTW_K_means_clusters.pickle")
+    
+    k = 6
+    features_to_cluster = [['joint_vel', 'target_joint_vel']]
+    return {
+        "actions": [
+            (
+                actions.action_one_step_DTW_K_means_clustering,
+                (
+                    preprocessed_dataset,
+                    clusters,
+                    k,
+                    features_to_cluster
+                ),
+            )
+        ],
+        "file_dep": [preprocessed_dataset],
+        "targets": [clusters],
+        "clean": True,
+    }
+
+def task_compute_cluster_phase():
+    clusters_path = WD.joinpath("build", "DTW_K_means_clusters.pickle")
+    cluster_phase = WD.joinpath("build", "cluster_phase.pickle")
+    return {
+        "actions": [
+            (
+                actions.action_compute_cluster_phase,
+                (
+                    clusters_path,
+                    cluster_phase,
+                ),
+            )
+        ],
+        "file_dep": [clusters_path],
+        "targets": [cluster_phase],
+        "clean": True,
+    }
 
 def task_compute_phase():
     """Compute phase offset."""
@@ -50,6 +93,36 @@ def task_compute_phase():
         ],
         "file_dep": [preprocessed_dataset],
         "targets": [phase],
+        "clean": True,
+    }
+
+def task_cluster_id_models():
+    clusters_path = WD.joinpath("build", "DTW_K_means_clusters.pickle")
+    cluster_phase = WD.joinpath("build", "cluster_phase.pickle")
+    cluster_models_linear = WD.joinpath("build", "cluster_models_linear.pickle")
+    yield {
+        "name": "linear",
+        "actions": [
+            (
+                actions.action_cluster_id_models,
+                (clusters_path, cluster_phase, cluster_models_linear, "linear"),
+            )
+        ],
+        "file_dep": [clusters_path, cluster_phase],
+        "targets": [cluster_models_linear],
+        "clean": True,
+    }
+    cluster_models_koopman = WD.joinpath("build", "cluster_models_koopman.pickle")
+    yield {
+        "name": "koopman",
+        "actions": [
+            (
+                actions.action_cluster_id_models,
+                (clusters_path, cluster_phase, cluster_models_koopman, "koopman"),
+            )
+        ],
+        "file_dep": [clusters_path, cluster_phase],
+        "targets": [cluster_models_koopman],
         "clean": True,
     }
 
