@@ -144,6 +144,7 @@ def action_one_step_DTW_K_means_clustering(
     
 ):
     max_iter=3
+    t_step = 1e-3
     dataset = joblib.load(dataset_path)
     time_series = ['joint_pos', 'joint_vel', 'joint_trq', 'target_joint_pos', 
                    'target_joint_vel']
@@ -176,6 +177,7 @@ def action_one_step_DTW_K_means_clustering(
     centers_dict={'k':[], 't':[], 'joint_pos':[], 'joint_vel':[], 'joint_trq':[], 
                   'target_joint_pos':[], 'target_joint_vel':[], 'clustering_no':[],
                   'center_no':[]}
+    #TODO add members
     for i, cluster_base in enumerate(zip(features_to_cluster, wh_data)):
         
         y_pred=km.fit_predict(cluster_base[1])
@@ -183,7 +185,7 @@ def action_one_step_DTW_K_means_clustering(
             size=km.cluster_centers_[center_num].shape[0]
             k=np.arange(0,size)
             centers_dict['k'].extend(k)
-            t=k/1000
+            t=k/t_step
             centers_dict['t'].extend(t)
             centers_dict['clustering_no'].extend([i]*size)
             centers_dict['center_no'].extend([center_num]*size)
@@ -195,6 +197,7 @@ def action_one_step_DTW_K_means_clustering(
                     n_wh_data[i][cl_mems][:,:,p], max_iter=max_iter)[:,0])
                 
     df = pandas.DataFrame(centers_dict)
+    df.attrs["t_step"] = t_step
     joblib.dump(df, clusters_path)
 
 def action_compute_cluster_phase(
@@ -208,11 +211,11 @@ def action_compute_cluster_phase(
     min_vel = 3
     trim = 100
     df_lst = []
-    for i, dataset_ep in clusters.groupby(by=["clustering_no","center_no"]):
-        tvel = dataset_ep["target_joint_vel"].to_numpy()
-        vel = dataset_ep["joint_vel"].to_numpy()
-        tpos = dataset_ep["target_joint_pos"].to_numpy()
-        pos = dataset_ep["joint_pos"].to_numpy()
+    for i, cluster_ep in clusters.groupby(by=["clustering_no","center_no"]):
+        tvel = cluster_ep["target_joint_vel"].to_numpy()
+        vel = cluster_ep["joint_vel"].to_numpy()
+        tpos = cluster_ep["target_joint_pos"].to_numpy()
+        pos = cluster_ep["joint_pos"].to_numpy()
         # Find points where velocity changes
         vel_changes = np.ravel(np.argwhere(np.diff(tvel, prepend=0) != 0))
         # Split into constant-velocity segments
@@ -259,9 +262,8 @@ def action_compute_cluster_phase(
     df = pandas.DataFrame(
         df_lst,
         columns=[
-            "serial_no",
-            "load",
-            "episode",
+            "clustering_no",
+            "center_no",
             "direction",
             "optimal_phase",
             "phases",
@@ -269,7 +271,7 @@ def action_compute_cluster_phase(
         ],
     )
     df.sort_values(
-        by=["serial_no", "load", "episode"],
+        by=["clustering_no", "center_no"],
         inplace=True,
     )
     joblib.dump(df, clusters_phase_path)
@@ -356,6 +358,81 @@ def action_compute_phase(
     )
     joblib.dump(df, phase_path)
 
+def action_cluster_id_models(
+    clusters_path: pathlib.Path,
+    cluster_phase_path: pathlib.Path,
+    cluster_models_path: pathlib.Path,
+    koopman: str,
+):
+    
+    cluster_models_path.parent.mkdir(parents=True, exist_ok=True)
+    clusters = joblib.load(clusters_path)
+    n_inputs = 2
+    episode_feature = True
+    t_step = clusters.attrs["t_step"]
+
+    df_lst = []
+    for i, cluster_ep in clusters.groupby(by=["clustering_no","center_no"]):
+        X = cluster_ep[
+            [
+                "joint_pos",
+                "joint_vel",
+                "joint_trq",
+                "target_joint_pos",
+                "target_joint_vel",
+            ]
+        ]
+        if koopman == "koopman":
+            # Get optimal phase shift
+            cluster_phase = joblib.load(cluster_phase_path)
+            phi_all = cluster_phase.loc[(cluster_phase["clustering_no"] == i[0]) & (cluster_phase["center_no"] == i[1])]
+            optimal_phi = _circular_mean(phi_all["optimal_phase"].to_numpy())
+            # Set lifting functions
+            lf = [
+                (
+                    "sin",
+                    onesine.OneSineLiftingFn(
+                        f=100,
+                        i=0,
+                        phi=optimal_phi,
+                    ),
+                )
+            ]
+        else:
+            lf = None
+        # Fit Koopman model
+        kp = pykoop.KoopmanPipeline(
+            lifting_functions=lf,
+            regressor=pykoop.Edmd(alpha=90),
+        )
+        kp.fit(X, n_inputs=n_inputs, episode_feature=episode_feature)
+        # Create state-space model
+        nx = kp.regressor_.coef_.T.shape[0]
+        nu = kp.regressor_.coef_.T.shape[1] - nx
+        A = kp.regressor_.coef_.T[:, :nx]
+        B = kp.regressor_.coef_.T[:, nx:]
+        ss = control.StateSpace(
+            A,
+            B,
+            np.eye(nx),
+            np.zeros((nx, nu)),
+            dt=t_step,
+        )
+        # Check stability
+        if np.any(np.abs(scipy.linalg.eigvals(A)) >= 1):
+            raise RuntimeError(f"System {i} is unstable.")
+        ss_mat = (ss.A, ss.B, ss.C, ss.D, ss.dt)
+        df_lst.append(i + (kp, ss_mat))
+    df = pandas.DataFrame(
+        df_lst,
+        columns=["clustering_no", "center_no", "koopman_pipeline", "state_space"],
+    )
+    df.sort_values(
+        by=["clustering_no","center_no"],
+        inplace=True,
+    )
+    df.attrs["t_step"] = t_step
+    joblib.dump(df, cluster_models_path)
 
 def action_id_models(
     dataset_path: pathlib.Path,
@@ -435,7 +512,12 @@ def action_id_models(
     df.attrs["t_step"] = t_step
     joblib.dump(df, models_path)
 
-
+def action_compute_residuals_by_clusters(
+    models_path: pathlib.Path,
+    cluster_models_path: pathlib.Path,
+    cluster_residuals_path: pathlib.Path,
+):
+    
 def action_compute_residuals(
     models_path: pathlib.Path,
     residuals_path: pathlib.Path,
