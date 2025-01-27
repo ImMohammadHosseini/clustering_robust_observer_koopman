@@ -37,18 +37,17 @@ def task_one_step_clustering():
     """Task to perform time series clustering using DTW with K-means."""
     
     preprocessed_dataset = WD.joinpath("build", "dataset.pickle")
-    cluster_pred = WD.joinpath("build", "pred.pickle")
+    #cluster_pred = WD.joinpath("build", "pred.pickle")
     clusters = WD.joinpath("build", "DTW_K_means_clusters.pickle")
     
     k = 6
-    features_to_cluster = [['joint_pos'], ['joint_vel'], ['joint_trq']]
+    features_to_cluster = [['joint_vel', 'target_joint_vel']]
     return {
         "actions": [
             (
                 actions.action_one_step_DTW_K_means_clustering,
                 (
                     preprocessed_dataset,
-                    cluster_pred,
                     clusters,
                     k,
                     features_to_cluster
@@ -56,7 +55,25 @@ def task_one_step_clustering():
             )
         ],
         "file_dep": [preprocessed_dataset],
-        "targets": [cluster_pred, clusters],
+        "targets": [clusters],
+        "clean": True,
+    }
+
+def task_compute_cluster_phase():
+    clusters = WD.joinpath("build", "DTW_K_means_clusters.pickle")
+    cluster_phase = WD.joinpath("build", "cluster_phase.pickle")
+    return {
+        "actions": [
+            (
+                actions.action_compute_phase,
+                (
+                    clusters,
+                    cluster_phase,
+                ),
+            )
+        ],
+        "file_dep": [clusters],
+        "targets": [cluster_phase],
         "clean": True,
     }
 
