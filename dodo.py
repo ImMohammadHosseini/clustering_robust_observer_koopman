@@ -227,7 +227,93 @@ def task_compute_residuals():
         "clean": True,
     }
 
-
+def task_generate_uncertainty_weights_for_cluster_models():
+    cluster_residuals_koopman = WD.joinpath(
+        "build", "cluster_residuals_koopman.pickle"
+    )
+    orders_koopman = np.array(
+        [
+            [1, 3],
+            [3, 3],
+        ]
+    )
+    cluster_uncertainty_koopman = WD.joinpath(
+        "build", "cluster_uncertainty_koopman.pickle"
+    )
+    cluster_uncertainty_mimo_koopman = WD.joinpath(
+        "build", "cluster_uncertainty_mimo_koopman.png"
+    )
+    cluster_uncertainty_msv_koopman = WD.joinpath(
+        "build", "cluster_uncertainty_msv_koopman.png"
+    )
+    cluster_nominal = WD.joinpath("build", "cluster_nominal.txt")
+    yield {
+        "name": "koopman",
+        "actions": [
+            (
+                actions.action_generate_uncertainty_weights_for_cluster_models,
+                (
+                    cluster_residuals_koopman,
+                    cluster_nominal,
+                    cluster_uncertainty_koopman,
+                    cluster_uncertainty_mimo_koopman,
+                    cluster_uncertainty_msv_koopman,
+                    orders_koopman,
+                    "koopman",
+                    "noload",
+                ),
+            )
+        ],
+        "file_dep": [cluster_residuals_koopman],
+        "targets": [
+            cluster_uncertainty_koopman,
+            cluster_nominal,
+            cluster_uncertainty_mimo_koopman,
+            cluster_uncertainty_msv_koopman,
+        ],
+        "clean": True,
+    }
+    
+    cluster_residuals_linear = WD.joinpath("build", "cluster_residuals_linear.pickle")
+    orders_linear = np.array(
+        [
+            [1, 2],
+            [1, 2],
+        ]
+    )
+    cluster_uncertainty_linear = WD.joinpath("build", "cluster_uncertainty_linear.pickle")
+    cluster_uncertainty_mimo_linear = WD.joinpath(
+        "build", "cluster_uncertainty_mimo_linear.png"
+    )
+    cluster_uncertainty_msv_linear = WD.joinpath(
+        "build", "cluster_uncertainty_msv_linear.png"
+    )
+    yield {
+        "name": "linear_noload",
+        "actions": [
+            (
+                actions.action_generate_uncertainty_weights_for_cluster_models,
+                (
+                    cluster_residuals_linear,
+                    cluster_nominal,
+                    cluster_uncertainty_linear,
+                    cluster_uncertainty_mimo_linear,
+                    cluster_uncertainty_msv_linear,
+                    orders_linear,
+                    "linear",
+                    "noload",
+                ),
+            )
+        ],
+        "file_dep": [cluster_residuals_linear, cluster_nominal],
+        "targets": [
+            cluster_uncertainty_linear,
+            cluster_uncertainty_mimo_linear,
+            cluster_uncertainty_msv_linear,
+        ],
+        "clean": True,
+    }
+    
 def task_generate_uncertainty_weights():
     """Generate uncertainty weights models."""
     residuals_koopman = WD.joinpath("build", "residuals_koopman.pickle")
