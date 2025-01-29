@@ -37,8 +37,8 @@ def task_one_step_clustering():
     """Task to perform time series clustering using DTW with K-means."""
     
     preprocessed_dataset = WD.joinpath("build", "dataset.pickle")
-    #cluster_pred = WD.joinpath("build", "pred.pickle")
     clusters = WD.joinpath("build", "DTW_K_means_clusters.pickle")
+    cluster_preds = WD.joinpath("build", "cluster_preds.pickle")
     
     k = 6
     features_to_cluster = [['joint_vel', 'target_joint_vel']]
@@ -49,13 +49,14 @@ def task_one_step_clustering():
                 (
                     preprocessed_dataset,
                     clusters,
+                    cluster_preds,
                     k,
                     features_to_cluster
                 ),
             )
         ],
         "file_dep": [preprocessed_dataset],
-        "targets": [clusters],
+        "targets": [clusters, cluster_preds],
         "clean": True,
     }
 
@@ -159,6 +160,42 @@ def task_id_models():
     }
 
 
+def task_compute_residuals_for_clusters():
+    """Compute residuals from linear and Koopman models for clusters."""
+    models_linear = WD.joinpath("build", "models_linear.pickle")
+    cluster_models_linear = WD.joinpath("build", "cluster_models_linear.pickle")
+    cluster_preds = WD.joinpath("build", "cluster_preds.pickle")
+    cluster_residuals_linear = WD.joinpath("build", "cluster_residuals_linear.pickle")
+    yield {
+        "name": "linear",
+        "actions": [
+            (
+                actions.action_compute_residuals_for_clusters,
+                (models_linear, cluster_models_linear, cluster_preds,
+                 cluster_residuals_linear),
+            )
+        ],
+        "file_dep": [models_linear, cluster_models_linear, cluster_preds],
+        "targets": [cluster_residuals_linear],
+        "clean": True,
+    }
+    models_koopman = WD.joinpath("build", "models_koopman.pickle")
+    cluster_models_koopman = WD.joinpath("build", "cluster_models_koopman.pickle")
+    cluster_residuals_koopman = WD.joinpath("build", "cluster_residuals_koopman.pickle")
+    yield {
+        "name": "koopman",
+        "actions": [
+            (
+                actions.action_compute_residuals_for_clusters,
+                (models_koopman, cluster_models_koopman, cluster_preds, 
+                 cluster_residuals_koopman),
+            )
+        ],
+        "file_dep": [models_koopman, cluster_models_koopman, cluster_preds],
+        "targets": [cluster_residuals_koopman],
+        "clean": True,
+    }
+    
 def task_compute_residuals():
     """Compute residuals from linear and Koopman models."""
     models_linear = WD.joinpath("build", "models_linear.pickle")
