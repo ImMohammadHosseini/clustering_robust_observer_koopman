@@ -553,8 +553,10 @@ def action_compute_residuals_for_clusters(
             & (cluster_preds["center_no"] == i[1])
         ]
         serial_numbers = np.unique(off_nominal_info_['serial_no'])
+        loads = np.unique(off_nominal_info_['load'])
         off_nominal_ = models.loc[
-            (models["serial_no"] == serial_numbers)
+            (models["serial_no"] == serial_numbers) &
+            (models["load"] == loads)
         ]
         off_nominal = [
             control.StateSpace(*on_) for on_ in off_nominal_["state_space"].to_list()
@@ -739,7 +741,88 @@ def action_compute_residuals(
     df.attrs["f"] = f
     joblib.dump(df, residuals_path)
 
+def action_generate_uncertainty_weights_for_cluster_models(
+    cluster_residuals_path: pathlib.Path,
+    cluster_nominal_path: pathlib.Path,
+    cluster_uncertainty_path: pathlib.Path,
+    cluster_uncertainty_mimo_path: pathlib.Path,
+    cluster_uncertainty_msv_path: pathlib.Path,
+    orders: np.ndarray,
+    koopman: str,
+    
+):
+    cluster_uncertainty_path.parent.mkdir(parents=True, exist_ok=True)
+    cluster_residuals = joblib.load(cluster_residuals_path)
+    t_step = cluster_residuals.attrs["t_step"]
+    f = cluster_residuals.attrs["f"]
+    omega = 2 * np.pi * f
+    #load_bool = load == "load"
+    
+    if koopman == "linear":
+        # nominal = joblib.load(nominal_path)
+        nominal = cluster_nominal_path.read_text()
+        cluster_residuals_ia = cluster_residuals.loc[
+            (cluster_residuals["uncertainty_form"] == "inverse_input_multiplicative")
+            & (cluster_residuals["clustering_no"] == nominal.split('\n')[0])
+            & (cluster_residuals["center_no"] == nominal.split('\n')[1])
+        ]
+    else:
+        cluster_residuals_ia = cluster_residuals.loc[
+            (cluster_residuals["uncertainty_form"] == "inverse_input_multiplicative")
+        ]
+    
+    min_area = cluster_residuals_ia.loc[cluster_residuals_ia["peak_bound"].idxmin()]
 
+    all = np.abs(np.array(min_area["residuals"]))
+    bound = np.max(all, axis=0)
+
+    fit_bound_arr = np.zeros(orders.shape, dtype=object)
+    for i in range(fit_bound_arr.shape[0]):
+        for j in range(fit_bound_arr.shape[1]):
+            fit_bound_arr[i, j] = tf_cover.tf_cover(omega, bound[i, j, :], orders[i, j])
+    fit_bound = _combine(fit_bound_arr)
+    mag, _, _ = fit_bound.frequency_response(omega)
+
+    fig, ax = plt.subplots(fit_bound_arr.shape[0], fit_bound_arr.shape[1])
+    for i in range(fit_bound_arr.shape[0]):
+        for j in range(fit_bound_arr.shape[1]):
+            for residual in min_area["residuals"]:
+                magnitude = 20 * np.log10(np.abs(residual))
+                ax[i, j].semilogx(f, magnitude[i, j, :], ":k")
+                ax[i, 0].set_ylabel(r"$|W(f)|$ (dB)")
+                ax[-1, j].set_xlabel(r"$f$ (Hz)")
+            ax[i, j].semilogx(f, 20 * np.log10(bound[i, j, :]), "r", lw=3, label="max")
+            ax[i, j].semilogx(f, 20 * np.log10(mag[i, j, :]), "--b", lw=3, label="fit")
+    fig.suptitle(f"{koopman} uncertainty bounds")
+    for a in ax.ravel():
+        a.grid(ls="--")
+    fig.savefig(cluster_uncertainty_mimo_path)
+
+    max_sv = min_area["bound"]
+    max_sv_fit = np.array([scipy.linalg.svdvals(fit_bound(1j * w))[0] for w in omega])
+    fig, ax = plt.subplots()
+    ax.semilogx(f, 20 * np.log10(max_sv), "r", lw=3)
+    ax.semilogx(f, 20 * np.log10(max_sv_fit), "--b", lw=3)
+    ax.grid(ls="--")
+    ax.set_xlabel(r"$f$ (Hz)")
+    ax.set_ylabel(r"$\bar{\sigma}(W(f))$ (dB)")
+    ax.set_title(f"{koopman} uncertainty bound")
+    fig.savefig(cluster_uncertainty_msv_path)
+
+    nominal_clustering_no = min_area["clustering_no"]
+    nominal_center_no = min_area["center_no"]
+    if koopman == "koopman":
+        cluster_nominal_path.write_text(nominal_clustering_no+"\n"+ nominal_center_no)
+
+    data = {
+        "nominal_clustering_no": nominal_clustering_no,
+        "nominal_center_no": nominal_center_no,
+        "bound": bound,
+        "fit_bound": fit_bound,
+        "t_step": t_step,
+    }
+    joblib.dump(data, cluster_uncertainty_path)
+    
 def action_generate_uncertainty_weights(
     residuals_path: pathlib.Path,
     nominal_path: pathlib.Path,
