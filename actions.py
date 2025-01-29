@@ -139,6 +139,7 @@ def action_preprocess_experiments(
 def action_one_step_DTW_K_means_clustering(
     dataset_path: pathlib.Path,
     clusters_path: pathlib.Path,
+    cluster_preds_path: pathlib.Path,
     k: int,
     features_to_cluster: list,  # List of features to cluster, e.g. ['joint_pos', 'joint_vel']
     
@@ -149,6 +150,7 @@ def action_one_step_DTW_K_means_clustering(
     time_series = ['joint_pos', 'joint_vel', 'joint_trq', 'target_joint_pos', 
                    'target_joint_vel']
     gp_dataset = dataset.groupby(by=["serial_no", "load", "episode"])
+    gp_info=np.array(list(gp_dataset.groups.keys()))
     wh_data = []
     n_wh_data = []
     other_center_parts = []
@@ -173,14 +175,21 @@ def action_one_step_DTW_K_means_clustering(
 
     km = TimeSeriesKMeans(n_clusters=k, verbose=True, max_iter=max_iter, 
                           metric='dtw', random_state=0, n_jobs=4)
-    #y_preds_dict={}
+    y_preds_dict={"serial_no":[], "load":[], "episode":[], "clustering_no":[],
+                  "center_no":[]}
     centers_dict={'k':[], 't':[], 'joint_pos':[], 'joint_vel':[], 'joint_trq':[], 
                   'target_joint_pos':[], 'target_joint_vel':[], 'clustering_no':[],
                   'center_no':[]}
-    #TODO add members
     for i, cluster_base in enumerate(zip(features_to_cluster, wh_data)):
         
         y_pred=km.fit_predict(cluster_base[1])
+
+        y_preds_dict["serial_no"].extend(gp_info[:,0])
+        y_preds_dict["load"].extend(gp_info[:,1])
+        y_preds_dict["episode"].extend(gp_info[:,2])
+        y_preds_dict['clustering_no'].extend([i]*y_pred.shape[0])
+        y_preds_dict['center_no'].extend(y_pred.shape)
+
         for center_num in range(k):
             size=km.cluster_centers_[center_num].shape[0]
             k=np.arange(0,size)
@@ -199,6 +208,9 @@ def action_one_step_DTW_K_means_clustering(
     df = pandas.DataFrame(centers_dict)
     df.attrs["t_step"] = t_step
     joblib.dump(df, clusters_path)
+    
+    df = pandas.DataFrame(y_preds_dict)
+    joblib.dump(df, cluster_preds_path)
 
 def action_compute_cluster_phase(
     clusters_path: pathlib.Path,
@@ -512,12 +524,116 @@ def action_id_models(
     df.attrs["t_step"] = t_step
     joblib.dump(df, models_path)
 
-def action_compute_residuals_by_clusters(
+def action_compute_residuals_for_clusters(
     models_path: pathlib.Path,
     cluster_models_path: pathlib.Path,
+    cluster_preds_path: pathlib.Path,
     cluster_residuals_path: pathlib.Path,
 ):
+    cluster_residuals_path.parent.mkdir(parents=True, exist_ok=True)
+    models = joblib.load(models_path)
+    cluster_models = joblib.load(cluster_models_path)
+    cluster_preds = joblib.load(cluster_preds_path)
+    t_step = models.attrs["t_step"]
+    uncertainty_forms = [
+        "additive",
+        "input_multiplicative",
+        "output_multiplicative",
+        "inverse_additive",
+        "inverse_input_multiplicative",
+        "inverse_output_multiplicative",
+    ]
+    f = np.logspace(-3, np.log10(0.5 / t_step), 1000)
     
+    df_lst = []
+    for i, center_model_ep in cluster_models.groupby(by=["clustering_no", "center_no"]):
+        nominal = control.StateSpace(*center_model_ep["state_space"].item())
+        off_nominal_info_ = cluster_preds.loc[
+            (cluster_preds["clustering_no"] == i[0])
+            & (cluster_preds["center_no"] == i[1])
+        ]
+        serial_numbers = np.unique(off_nominal_info_['serial_no'])
+        off_nominal_ = models.loc[
+            (models["serial_no"] == serial_numbers)
+        ]
+        off_nominal = [
+            control.StateSpace(*on_) for on_ in off_nominal_["state_space"].to_list()
+        ]
+        #off_nominal_sn = off_nominal_["serial_no"].to_list()
+        # Compute residuals
+        for uncertainty_form in uncertainty_forms:
+            residual_data = _residuals(
+                nominal,
+                off_nominal,
+                t_step,
+                f,
+                form=uncertainty_form,
+            )
+            df_lst.append(
+                i
+                + (
+                    uncertainty_form,
+                    residual_data["peak_bound"],
+                    residual_data["area_bound"],
+                    residual_data["bound"],
+                    residual_data["magnitudes"],
+                    residual_data["residuals"],
+                    serial_numbers,
+                )
+            )
+     
+    # Add averaged center model
+    As, Bs, Cs, Ds, dts = zip(*cluster_models["state_space"].to_list())
+    A_avg = np.mean(np.array(As), axis=0)
+    B_avg = np.mean(np.array(Bs), axis=0)
+    nominal = control.StateSpace(A_avg, B_avg, Cs[0], Ds[0], dts[0])
+    off_nominal_ = models["state_space"].to_list()
+    off_nominal = [control.StateSpace(*on_) for on_ in off_nominal_]
+    off_nominal_sn = models["serial_no"].to_list()
+    # Compute residuals
+    for uncertainty_form in uncertainty_forms:
+        residual_data = _residuals(
+            nominal,
+            off_nominal,
+            t_step,
+            f,
+            form=uncertainty_form,
+        )
+        df_lst.append(
+            (
+                "center_average",
+                "center_average",
+                uncertainty_form,
+                residual_data["peak_bound"],
+                residual_data["area_bound"],
+                residual_data["bound"],
+                residual_data["magnitudes"],
+                residual_data["residuals"],
+                off_nominal_sn,
+            )
+        )
+    df = pandas.DataFrame(
+        df_lst,
+        columns=[
+            "clustering_no", 
+            "center_no",
+            "uncertainty_form",
+            "peak_bound",
+            "area_bound",
+            "bound",
+            "magnitudes",
+            "residuals",
+            "off_nominal_serial_no",
+        ],
+    )
+    df.sort_values(
+        by=["clustering_no", "center_no", "uncertainty_form"],
+        inplace=True,
+    )
+    df.attrs["t_step"] = t_step
+    df.attrs["f"] = f
+    joblib.dump(df, cluster_residuals_path)
+
 def action_compute_residuals(
     models_path: pathlib.Path,
     residuals_path: pathlib.Path,
