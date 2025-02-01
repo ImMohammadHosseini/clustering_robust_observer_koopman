@@ -12,7 +12,9 @@ import actions
 
 # Directory containing ``dodo.py``
 WD = pathlib.Path(__file__).parent.resolve()
-
+K = 6
+FEATURES_TO_CLUSTER = [['joint_vel', 'target_joint_vel']]
+CLUSTERING_NUM = len(FEATURES_TO_CLUSTER)
 
 def task_preprocess_experiments():
     """Preprocess raw data into pickle containing a dataframe."""
@@ -39,9 +41,8 @@ def task_one_step_clustering():
     preprocessed_dataset = WD.joinpath("build", "dataset.pickle")
     clusters = WD.joinpath("build", "DTW_K_means_clusters.pickle")
     cluster_preds = WD.joinpath("build", "cluster_preds.pickle")
+    cluster_split_info = WD.joinpath("build", "cluster_split_info.pickle")
     
-    k = 6
-    features_to_cluster = [['joint_vel', 'target_joint_vel']]
     return {
         "actions": [
             (
@@ -50,13 +51,14 @@ def task_one_step_clustering():
                     preprocessed_dataset,
                     clusters,
                     cluster_preds,
-                    k,
-                    features_to_cluster
+                    cluster_split_info,
+                    K,
+                    FEATURES_TO_CLUSTER
                 ),
             )
         ],
         "file_dep": [preprocessed_dataset],
-        "targets": [clusters, cluster_preds],
+        "targets": [clusters, cluster_preds, cluster_split_info],
         "clean": True,
     }
 
@@ -238,20 +240,20 @@ def task_generate_uncertainty_weights_for_cluster_models():
         ]
     )
     cluster_uncertainty_koopman = WD.joinpath(
-        "build", "cluster_uncertainty_koopman.pickle"
+        "build", "cluster_uncertainty_min_residual_koopman.pickle"
     )
     cluster_uncertainty_mimo_koopman = WD.joinpath(
-        "build", "cluster_uncertainty_mimo_koopman.png"
+        "build", "cluster_uncertainty_mimo_min_residual_koopman.png"
     )
     cluster_uncertainty_msv_koopman = WD.joinpath(
-        "build", "cluster_uncertainty_msv_koopman.png"
+        "build", "cluster_uncertainty_msv_min_residual_koopman.png"
     )
-    cluster_nominal = WD.joinpath("build", "cluster_nominal.txt")
+    cluster_nominal = WD.joinpath("build", "cluster_nominal_min_residual.txt")
     yield {
         "name": "koopman",
         "actions": [
             (
-                actions.action_generate_uncertainty_weights_for_cluster_models,
+                actions.action_generate_uncertainty_weights_for_cluster_models_min_residual,
                 (
                     cluster_residuals_koopman,
                     cluster_nominal,
@@ -260,7 +262,6 @@ def task_generate_uncertainty_weights_for_cluster_models():
                     cluster_uncertainty_msv_koopman,
                     orders_koopman,
                     "koopman",
-                    "noload",
                 ),
             )
         ],
@@ -281,18 +282,18 @@ def task_generate_uncertainty_weights_for_cluster_models():
             [1, 2],
         ]
     )
-    cluster_uncertainty_linear = WD.joinpath("build", "cluster_uncertainty_linear.pickle")
+    cluster_uncertainty_linear = WD.joinpath("build", "cluster_uncertainty_min_residual_linear.pickle")
     cluster_uncertainty_mimo_linear = WD.joinpath(
-        "build", "cluster_uncertainty_mimo_linear.png"
+        "build", "cluster_uncertainty_mimo_min_residual_linear.png"
     )
     cluster_uncertainty_msv_linear = WD.joinpath(
-        "build", "cluster_uncertainty_msv_linear.png"
+        "build", "cluster_uncertainty_msv_min_residual_linear.png"
     )
     yield {
-        "name": "linear_noload",
+        "name": "linear",
         "actions": [
             (
-                actions.action_generate_uncertainty_weights_for_cluster_models,
+                actions.action_generate_uncertainty_weights_for_cluster_models_min_residual,
                 (
                     cluster_residuals_linear,
                     cluster_nominal,
@@ -301,7 +302,6 @@ def task_generate_uncertainty_weights_for_cluster_models():
                     cluster_uncertainty_msv_linear,
                     orders_linear,
                     "linear",
-                    "noload",
                 ),
             )
         ],
@@ -313,6 +313,80 @@ def task_generate_uncertainty_weights_for_cluster_models():
         ],
         "clean": True,
     }
+    for cl in range(CLUSTERING_NUM):
+        for c in range (K):
+            cluster_uncertainty_koopman = WD.joinpath(
+                "build", "cluster_uncertainty_cl_"+str(cl)+"_center_"+str(c)+"_koopman.pickle"
+            )
+            cluster_uncertainty_mimo_koopman = WD.joinpath(
+                "build", "cluster_uncertainty_mimo_cl_"+str(cl)+"_center_"+str(c)+"_koopman.png"
+            )
+            cluster_uncertainty_msv_koopman = WD.joinpath(
+                "build", "cluster_uncertainty_msv_"+str(cl)+"_center_"+str(c)+"_koopman.png"
+                "_min_residual_koopman.png"
+            )
+    
+            yield {
+                "name": "koopman",
+                "actions": [
+                    (
+                        actions.action_generate_uncertainty_weights_for_cluster_models,
+                        (
+                            cluster_residuals_koopman,
+                            cluster_uncertainty_koopman,
+                            cluster_uncertainty_mimo_koopman,
+                            cluster_uncertainty_msv_koopman,
+                            orders_koopman,
+                            cl,
+                            c,
+                            "koopman",
+                        ),
+                    )
+                ],
+                "file_dep": [cluster_residuals_koopman],
+                "targets": [
+                    cluster_uncertainty_koopman,
+                    cluster_uncertainty_mimo_koopman,
+                    cluster_uncertainty_msv_koopman,
+                ],
+                "clean": True,
+            }
+            
+            
+            cluster_uncertainty_linear = WD.joinpath(
+                "build", "cluster_uncertainty_cl_"+str(cl)+"_center_"+str(c)+"_linear.pickle"
+            )
+            cluster_uncertainty_mimo_linear = WD.joinpath(
+                "build", "cluster_uncertainty_mimo_cl_"+str(cl)+"_center_"+str(c)+"_linear.png"
+            )
+            cluster_uncertainty_msv_linear = WD.joinpath(
+                "build", "cluster_uncertainty_msv_"+str(cl)+"_center_"+str(c)+"_linear.png"
+            )
+            yield {
+                "name": "linear_noload",
+                "actions": [
+                    (
+                        actions.action_generate_uncertainty_weights_for_cluster_models_min_residual,
+                        (
+                            cluster_residuals_linear,
+                            cluster_uncertainty_linear,
+                            cluster_uncertainty_mimo_linear,
+                            cluster_uncertainty_msv_linear,
+                            orders_linear,
+                            cl,
+                            c,
+                            "linear",
+                        ),
+                    )
+                ],
+                "file_dep": [cluster_residuals_linear],
+                "targets": [
+                    cluster_uncertainty_linear,
+                    cluster_uncertainty_mimo_linear,
+                    cluster_uncertainty_msv_linear,
+                ],
+                "clean": True,
+            }
     
 def task_generate_uncertainty_weights():
     """Generate uncertainty weights models."""
@@ -465,6 +539,8 @@ def task_generate_uncertainty_weights():
         "clean": True,
     }
 
+def task_synthesize_cluster_observer():
+    pass
 
 def task_synthesize_observer():
     """Synthesize observer."""
