@@ -4,6 +4,7 @@ import itertools
 import pathlib
 import re
 import shutil
+import json
 from typing import Any, Dict, List, Optional, Tuple
 
 import control
@@ -140,16 +141,27 @@ def action_one_step_DTW_K_means_clustering(
     dataset_path: pathlib.Path,
     clusters_path: pathlib.Path,
     cluster_preds_path: pathlib.Path,
+    cluster_split_info: pathlib.Path,
     k: int,
     features_to_cluster: list,  # List of features to cluster, e.g. ['joint_pos', 'joint_vel']
     
 ):
+    cluster_split_info.parent.mkdir(parents=True, exist_ok=True)
     max_iter=3
     t_step = 1e-3
     dataset = joblib.load(dataset_path)
     time_series = ['joint_pos', 'joint_vel', 'joint_trq', 'target_joint_pos', 
                    'target_joint_vel']
-    gp_dataset = dataset.groupby(by=["serial_no", "load", "episode"])
+    serial_nos = np.unique(dataset['serial_no'])
+    test_dataset_serial_no=np.random.choice(np.setdiff1d(serial_nos,['000000']), 2, replace=False)
+    train_dataset_serial_no=np.setdiff1d(serial_nos, test_dataset_serial_no)
+    episodes=np.unique(dataset['episode'])
+    test_episodes=np.random.choice(episodes, 2, replace=False)
+    train_episodes=np.setdiff1d(episodes, test_episodes)
+    
+    gp_dataset = dataset[(dataset['serial_no'].isin(train_dataset_serial_no)) & 
+                     (dataset['episode'].isin(train_episodes))].groupby(by=["serial_no", "load", "episode"])
+    #gp_dataset = dataset.groupby(by=["serial_no", "load", "episode"])
     gp_info=np.array(list(gp_dataset.groups.keys()))
     wh_data = []
     n_wh_data = []
@@ -211,6 +223,21 @@ def action_one_step_DTW_K_means_clustering(
     
     df = pandas.DataFrame(y_preds_dict)
     joblib.dump(df, cluster_preds_path)
+    
+    split_info = {
+        "train": {
+            "serial_numbers": train_dataset_serial_no.tolist(),
+            "episodes": train_episodes.tolist()
+        },
+        "test": {
+            "serial_numbers": test_dataset_serial_no.tolist(),
+            "episodes": test_episodes.tolist()
+        }
+    }
+    
+    with cluster_split_info.open('w') as f:
+        json.dump(split_info, f)
+    
 
 def action_compute_cluster_phase(
     clusters_path: pathlib.Path,
@@ -741,17 +768,17 @@ def action_compute_residuals(
     df.attrs["f"] = f
     joblib.dump(df, residuals_path)
 
-def action_generate_uncertainty_weights_for_cluster_models(
+def action_generate_uncertainty_weights_for_cluster_models_min_residual(
     cluster_residuals_path: pathlib.Path,
-    cluster_nominal_path: pathlib.Path,
-    cluster_uncertainty_path: pathlib.Path,
-    cluster_uncertainty_mimo_path: pathlib.Path,
-    cluster_uncertainty_msv_path: pathlib.Path,
+    cluster_nominal_min_residual_path: pathlib.Path,
+    cluster_uncertainty_min_res_path: pathlib.Path,
+    cluster_uncertainty_mimo_min_res_path: pathlib.Path,
+    cluster_uncertainty_msv_min_res_path: pathlib.Path,
     orders: np.ndarray,
     koopman: str,
     
 ):
-    cluster_uncertainty_path.parent.mkdir(parents=True, exist_ok=True)
+    cluster_uncertainty_min_res_path.parent.mkdir(parents=True, exist_ok=True)
     cluster_residuals = joblib.load(cluster_residuals_path)
     t_step = cluster_residuals.attrs["t_step"]
     f = cluster_residuals.attrs["f"]
@@ -760,11 +787,11 @@ def action_generate_uncertainty_weights_for_cluster_models(
     
     if koopman == "linear":
         # nominal = joblib.load(nominal_path)
-        nominal = cluster_nominal_path.read_text()
+        nominal_center = cluster_nominal_min_residual_path.read_text()
         cluster_residuals_ia = cluster_residuals.loc[
             (cluster_residuals["uncertainty_form"] == "inverse_input_multiplicative")
-            & (cluster_residuals["clustering_no"] == nominal.split('\n')[0])
-            & (cluster_residuals["center_no"] == nominal.split('\n')[1])
+            & (cluster_residuals["clustering_no"] == nominal_center.split('\n')[0])
+            & (cluster_residuals["center_no"] == nominal_center.split('\n')[1])
         ]
     else:
         cluster_residuals_ia = cluster_residuals.loc[
@@ -796,7 +823,7 @@ def action_generate_uncertainty_weights_for_cluster_models(
     fig.suptitle(f"{koopman} uncertainty bounds")
     for a in ax.ravel():
         a.grid(ls="--")
-    fig.savefig(cluster_uncertainty_mimo_path)
+    fig.savefig(cluster_uncertainty_mimo_min_res_path)
 
     max_sv = min_area["bound"]
     max_sv_fit = np.array([scipy.linalg.svdvals(fit_bound(1j * w))[0] for w in omega])
@@ -807,20 +834,92 @@ def action_generate_uncertainty_weights_for_cluster_models(
     ax.set_xlabel(r"$f$ (Hz)")
     ax.set_ylabel(r"$\bar{\sigma}(W(f))$ (dB)")
     ax.set_title(f"{koopman} uncertainty bound")
-    fig.savefig(cluster_uncertainty_msv_path)
+    fig.savefig(cluster_uncertainty_msv_min_res_path)
 
     nominal_clustering_no = min_area["clustering_no"]
     nominal_center_no = min_area["center_no"]
     if koopman == "koopman":
-        cluster_nominal_path.write_text(nominal_clustering_no+"\n"+ nominal_center_no)
+        cluster_nominal_min_residual_path.write_text(nominal_clustering_no+"\n"+ nominal_center_no)
 
     data = {
-        "nominal_clustering_no": nominal_clustering_no,
-        "nominal_center_no": nominal_center_no,
+        "clustering_no": nominal_clustering_no,
+        "center_no": nominal_center_no,
         "bound": bound,
         "fit_bound": fit_bound,
         "t_step": t_step,
     }
+    joblib.dump(data, cluster_uncertainty_min_res_path)
+
+def action_generate_uncertainty_weights_for_cluster_models(
+    cluster_residuals_path: pathlib.Path,
+    cluster_uncertainty_path: pathlib.Path,
+    cluster_uncertainty_mimo_path: pathlib.Path,
+    cluster_uncertainty_msv_path: pathlib.Path,
+    orders: np.ndarray,
+    clustering_no: int,
+    center_no: int,
+    koopman: str,
+):
+    cluster_uncertainty_path.parent.mkdir(parents=True, exist_ok=True)
+    cluster_residuals = joblib.load(cluster_residuals_path)
+    t_step = cluster_residuals.attrs["t_step"]
+    f = cluster_residuals.attrs["f"]
+    omega = 2 * np.pi * f    
+    
+    cluster_residuals_ia = cluster_residuals.loc[
+        (cluster_residuals["uncertainty_form"] == "inverse_input_multiplicative")
+        & (cluster_residuals["clustering_no"] == clustering_no)
+        & (cluster_residuals["center_no"] == center_no)
+    ]
+    
+    
+    all = np.abs(np.array(cluster_residuals_ia["residuals"]))
+    bound = np.max(all, axis=0)
+
+    fit_bound_arr = np.zeros(orders.shape, dtype=object)
+    for i in range(fit_bound_arr.shape[0]):
+        for j in range(fit_bound_arr.shape[1]):
+            fit_bound_arr[i, j] = tf_cover.tf_cover(omega, bound[i, j, :], orders[i, j])
+    fit_bound = _combine(fit_bound_arr)
+    mag, _, _ = fit_bound.frequency_response(omega)
+
+    fig, ax = plt.subplots(fit_bound_arr.shape[0], fit_bound_arr.shape[1])
+    for i in range(fit_bound_arr.shape[0]):
+        for j in range(fit_bound_arr.shape[1]):
+            for residual in cluster_residuals_ia["residuals"]:
+                magnitude = 20 * np.log10(np.abs(residual))
+                ax[i, j].semilogx(f, magnitude[i, j, :], ":k")
+                ax[i, 0].set_ylabel(r"$|W(f)|$ (dB)")
+                ax[-1, j].set_xlabel(r"$f$ (Hz)")
+            ax[i, j].semilogx(f, 20 * np.log10(bound[i, j, :]), "r", lw=3, label="max")
+            ax[i, j].semilogx(f, 20 * np.log10(mag[i, j, :]), "--b", lw=3, label="fit")
+    fig.suptitle(f"{koopman} uncertainty bounds")
+    for a in ax.ravel():
+        a.grid(ls="--")
+    fig.savefig(cluster_uncertainty_mimo_path)
+
+    max_sv = cluster_residuals_ia["bound"]
+    max_sv_fit = np.array([scipy.linalg.svdvals(fit_bound(1j * w))[0] for w in omega])
+    fig, ax = plt.subplots()
+    ax.semilogx(f, 20 * np.log10(max_sv), "r", lw=3)
+    ax.semilogx(f, 20 * np.log10(max_sv_fit), "--b", lw=3)
+    ax.grid(ls="--")
+    ax.set_xlabel(r"$f$ (Hz)")
+    ax.set_ylabel(r"$\bar{\sigma}(W(f))$ (dB)")
+    ax.set_title(f"{koopman} uncertainty bound")
+    fig.savefig(cluster_uncertainty_msv_path)
+
+    nominal_clustering_no = cluster_residuals_ia["clustering_no"]
+    nominal_center_no = cluster_residuals_ia["center_no"]
+    
+    data = {
+        "clustering_no": nominal_clustering_no,
+        "center_no": nominal_center_no,
+        "bound": bound,
+        "fit_bound": fit_bound,
+        "t_step": t_step,
+    }
+        
     joblib.dump(data, cluster_uncertainty_path)
     
 def action_generate_uncertainty_weights(
@@ -905,7 +1004,392 @@ def action_generate_uncertainty_weights(
     }
     joblib.dump(data, uncertainty_path)
 
+def action_synthesize_cluster_observer_design_phase(
+    cluster_models_path: pathlib.Path,
+    cluster_uncertainty_path: pathlib.Path,
+    cluster_observer_path: pathlib.Path,
+    cluster_weight_plot_path: pathlib.Path,
+    clustering_no: int,
+    center_no: int,
+    koopman: str,
+):
+    cluster_observer_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    cluster_models = joblib.load(cluster_models_path)
+    cluster_uncertainty = joblib.load(cluster_uncertainty_path)
+    t_step = cluster_models.attrs["t_step"]
+    # Results dictionary
+    results = {}
+    results['clustering_no']=clustering_no
+    results['center_no']=center_no
+    # Generalized plant weights
+    if koopman == "koopman":
+        W_p = control.StateSpace([], [], [], np.diag([1, 1, 1, 0]), dt=t_step)
+    else:
+        W_p = control.StateSpace([], [], [], np.diag([1, 1, 1]), dt=t_step)
+    W_u = control.StateSpace([], [], [], np.diag([1, 1]), dt=t_step)
+    W_D = control.tf2ss(cluster_uncertainty["fit_bound"]).sample(t_step)
+    # Save weight magnitudes
+    f = np.logspace(-3, np.log10(0.5 / t_step), 1000)
+    omega = 2 * np.pi * f
+    mag_p = _max_sv(W_p, f, t_step)
+    mag_u = _max_sv(W_u, f, t_step)
+    mag_D = _max_sv(W_D, f, t_step)
+    results["f"] = f
+    results["omega"] = omega
+    results["mag_p"] = mag_p
+    results["mag_u"] = mag_u
+    results["mag_D"] = mag_D
+    # Plot weights
+    fig, ax = plt.subplots()
+    ax.semilogx(f, 20 * np.log10(mag_p), label=r"$W_\mathrm{p}$")
+    ax.semilogx(f, 20 * np.log10(mag_u), "--", label=r"$W_\mathrm{u}$")
+    ax.semilogx(f, 20 * np.log10(mag_D), label=r"$W_\Delta$")
+    # Get nominal model and Koopman pipeline
+    P_0_ = control.StateSpace(
+        *cluster_models.loc[
+            (cluster_models["clustering_no"] == clustering_no) & 
+            (cluster_models["center_no"] == center_no), "state_space"
+        ].item()
+    )
+    
+    # Update ``C`` matrix
+    if koopman == "koopman":
+        P_0 = control.StateSpace(
+            P_0_.A,
+            P_0_.B,
+            np.array(
+                [
+                    [1, 0, 0, 0],
+                ]
+            ),
+            np.array([[0, 0]]),
+            P_0_.dt,
+        )
+    else:
+        P_0 = control.StateSpace(
+            P_0_.A,
+            P_0_.B,
+            np.array(
+                [
+                    [1, 0, 0],
+                ]
+            ),
+            np.array([[0, 0]]),
+            P_0_.dt,
+        )
+    # Set number of inputs and outputs for generalized plant
+    n_z2 = 2
+    n_w2 = 2
+    n_y = 1
+    n_u = 2
+    # Create generalized plant state-space matrices
+    F_A = np.block(
+        [
+            [
+                P_0.A,
+                np.zeros((P_0.nstates, P_0.nstates)),
+                np.zeros((P_0.nstates, W_p.nstates)),
+                P_0.B @ W_u.C,
+                P_0.B @ W_D.C,
+            ],
+            [
+                np.zeros((P_0.nstates, P_0.nstates)),
+                P_0.A,
+                np.zeros((P_0.nstates, W_p.nstates)),
+                P_0.B @ W_u.C,
+                np.zeros((P_0.nstates, W_D.nstates)),
+            ],
+            [
+                W_p.B,
+                -1 * W_p.B,
+                W_p.A,
+                np.zeros((W_p.nstates, W_u.nstates)),
+                np.zeros((W_p.nstates, W_D.nstates)),
+            ],
+            [
+                np.zeros((W_u.nstates, P_0.nstates)),
+                np.zeros((W_u.nstates, P_0.nstates)),
+                np.zeros((W_u.nstates, W_p.nstates)),
+                W_u.A,
+                np.zeros((W_u.nstates, W_D.nstates)),
+            ],
+            [
+                np.zeros((W_D.nstates, P_0.nstates)),
+                np.zeros((W_D.nstates, P_0.nstates)),
+                np.zeros((W_D.nstates, W_p.nstates)),
+                np.zeros((W_D.nstates, W_u.nstates)),
+                W_D.A,
+            ],
+        ]
+    )
+    F_B = np.block(
+        [
+            [
+                P_0.B @ W_u.D,
+                P_0.B @ W_D.D,
+                np.zeros((P_0.nstates, P_0.ninputs)),
+            ],
+            [
+                P_0.B @ W_u.D,
+                np.zeros((P_0.nstates, W_D.ninputs)),
+                P_0.B,
+            ],
+            [
+                np.zeros((W_p.nstates, W_u.ninputs)),
+                np.zeros((W_p.nstates, W_D.ninputs)),
+                np.zeros((W_p.nstates, P_0.ninputs)),
+            ],
+            [
+                W_u.B,
+                np.zeros((W_u.nstates, W_D.ninputs)),
+                np.zeros((W_u.nstates, P_0.ninputs)),
+            ],
+            [
+                np.zeros((W_D.nstates, W_u.ninputs)),
+                W_D.B,
+                np.zeros((W_D.nstates, P_0.ninputs)),
+            ],
+        ]
+    )
+    F_C = np.block(
+        [
+            [
+                W_p.D,
+                -1 * W_p.D,
+                W_p.C,
+                np.zeros((W_p.noutputs, W_u.nstates)),
+                np.zeros((W_p.noutputs, W_D.nstates)),
+            ],
+            [
+                np.zeros((W_D.noutputs, P_0.nstates)),
+                np.zeros((W_D.noutputs, P_0.nstates)),
+                np.zeros((W_D.noutputs, W_p.nstates)),
+                W_u.C,
+                W_D.C,
+            ],
+            [
+                P_0.C,
+                -1 * P_0.C,
+                np.zeros((P_0.noutputs, W_p.nstates)),
+                np.zeros((P_0.noutputs, W_u.nstates)),
+                np.zeros((P_0.noutputs, W_D.nstates)),
+            ],
+        ]
+    )
+    F_D = np.block(
+        [
+            [
+                np.zeros((W_p.noutputs, W_u.ninputs)),
+                np.zeros((W_p.noutputs, W_D.ninputs)),
+                np.zeros((W_p.noutputs, P_0.ninputs)),
+            ],
+            [
+                W_u.D,
+                W_D.D,
+                np.zeros((W_u.ninputs, P_0.ninputs)),
+            ],
+            [
+                np.zeros((P_0.noutputs, W_u.ninputs)),
+                np.zeros((P_0.noutputs, W_D.ninputs)),
+                np.zeros((P_0.noutputs, P_0.ninputs)),
+            ],
+        ]
+    )
+    F = control.StateSpace(F_A, F_B, F_C, F_D, t_step)
+    # Save magnitude responses of generalized plant and nominal plant
+    mag_F = _max_sv(F, f, t_step)
+    mag_P = _max_sv(P_0, f, t_step)
+    results["mag_P"] = mag_P
+    results["mag_F"] = mag_F
+    results["F"] = (F_A, F_B, F_C, F_D, t_step)
+    # Add magnitudes to plot and save it
+    ax.semilogx(f, 20 * np.log10(mag_F), label=r"$G$")
+    ax.semilogx(f, 20 * np.log10(mag_P), label=r"$P$")
+    ax.grid(ls="--")
+    ax.legend(loc="lower right")
+    fig.savefig(cluster_weight_plot_path)
+    # Synthesize controller
+    K, info = obs_syn.mixed_H2_Hinf(F, n_z2, n_w2, n_y, n_u)
+    if K is None:
+        raise RuntimeError(
+            f"Could not find solution to mixed H2-Hinf problem: {info['status']}"
+        )
+    # Save synthesis results
+    results["K"] = (K.A, K.B, K.C, K.D, t_step)
+    results["P"] = (P_0.A, P_0.B, P_0.C, P_0.D, t_step)
+    results["synthesis_info"] = info
+    joblib.dump(results, cluster_observer_path)
 
+#TODO
+def action_combine_uncertainties_observations():    
+def action_synthesize_cluster_observer_test_phase(
+    dataset_path: pathlib.Path,
+    cluster_split_info: pathlib.Path,
+    #clusters_path: pathlib.Path,
+    cluster_models_path: pathlib.Path,
+    #cluster_uncertainty_path: pathlib.Path,
+    #cluster_observer_path: pathlib.Path,
+    cluster_weight_plot_path: pathlib.Path,
+    #cluster_traj_plot_path: pathlib.Path,
+    #cluster_err_plot_path: pathlib.Path,
+    #cluster_fft_plot_path: pathlib.Path,
+    clustering_no: int,
+    center_no: int,
+    koopman: str,
+):
+    # Load dataset to test observer
+    #dataset = joblib.load(dataset_path)
+    #clusters = joblib.load(clusters_path)
+    dataset = joblib.load(dataset_path)
+    with cluster_split_info.open('r') as f:
+        split_info = json.load(f)
+        
+    
+    kp = cluster_models.loc[
+        (cluster_models["clustering_no"] == clustering_no) & 
+        (cluster_models["center_no"] == center_no), "koopman_pipeline"
+    ].item()#TODO
+    
+    dataset_sn_noload = dataset.loc[
+        (dataset["serial_no"] == nom_sn) & (~dataset["load"])
+    ]
+    X = dataset_sn_noload[
+        [
+            "episode",
+            "joint_pos",
+            "joint_vel",
+            "joint_trq",
+            "target_joint_pos",
+            "target_joint_vel",
+        ]
+    ]
+    X_valid_ = X.loc[X["episode"] >= N_TRAIN].to_numpy()
+    X_valid = pykoop.split_episodes(
+        X_valid_,
+        episode_feature=True,
+    )[0][1]
+    # Lift measurements (for linear model this will do nothing)
+    meas = kp.lift_state(X_valid[:, :3], episode_feature=False).T
+    inpt = X_valid[:, 3:5].T
+    t = np.arange(inpt.shape[1]) * t_step
+    # Form closed-loop system to check stability
+    A_cl = np.block(
+        [
+            [
+                P_0.A - P_0.B @ K.D @ P_0.C,
+                P_0.B @ K.C,
+            ],
+            [
+                -K.B @ P_0.C,
+                K.A,
+            ],
+        ]
+    )
+    evs = scipy.linalg.eigvals(A_cl)
+    violation = np.max(np.abs(evs)) - 1
+    if np.any(np.abs(evs) >= 1):
+        raise RuntimeError(f"Unstable closed-loop by {violation}.")
+    # Check stability with all off-nominal models
+    for i, model in models.groupby(by=["serial_no", "load"]):
+        A, B, _, _, _ = model["state_space"].item()
+        A_cl = np.block(
+            [
+                [
+                    A - B @ K.D @ P_0.C,
+                    B @ K.C,
+                ],
+                [
+                    -K.B @ P_0.C,
+                    K.A,
+                ],
+            ]
+        )
+        evs = scipy.linalg.eigvals(A_cl)
+        violation = np.max(np.abs(evs)) - 1
+        if np.any(np.abs(evs) >= 1):
+            raise RuntimeError(f"{i} unstable closed-loop by {violation}.")
+    # Simulate observer
+    X = np.zeros((P_0.nstates, t.shape[0]))
+    X[:, [0]] = kp.lift_state(np.zeros((1, 3)), episode_feature=False).T
+    Xc = np.zeros((K.nstates, t.shape[0]))
+    for k in range(1, t.shape[0] + 1):
+        # Compute error first since 0 has no D matrix
+        err = P_0.C @ meas[:, k - 1] - P_0.C @ X[:, k - 1]
+        # Compute control output
+        u = K.C @ Xc[:, k - 1] + K.D @ err
+        if k < X.shape[1]:
+            # Update plant with control input
+            if koopman == "linear":
+                X[:, k] = P_0.A @ X[:, k - 1] + P_0.B @ (inpt[:, k - 1] + u)
+            else:
+                Xt_ret = kp.retract_state(X[:, [k - 1]].T, episode_feature=False)
+                X_rl = kp.lift_state(Xt_ret, episode_feature=False).T.ravel()
+                X[:, k] = P_0.A @ X_rl + P_0.B @ (inpt[:, k - 1] + u)
+            # Update controller
+            Xc[:, k] = K.A @ Xc[:, k - 1] + K.B @ err
+    # Plot trajectories
+    fig, ax = plt.subplots(meas.shape[0] + inpt.shape[0], 1, sharex=True)
+    for i in range(meas.shape[0]):
+        ax[i].plot(meas[i, :], label="True")
+        ax[i].plot(X[i, :], "--", label="Estimate")
+    if koopman == "koopman":
+        ax[4].plot(inpt[0, :])
+        ax[5].plot(inpt[1, :])
+        ax[3].set_ylabel(r"$\sin{\theta}$")
+        ax[4].set_ylabel(r"$\theta$ ref. (rad)")
+        ax[5].set_ylabel(r"$\dot{\theta}$ ref.(rad/s)")
+        ax[5].set_xlabel(r"k")
+    else:
+        ax[3].plot(inpt[0, :])
+        ax[4].plot(inpt[1, :])
+        ax[3].set_ylabel(r"$\theta$ ref. (rad)")
+        ax[4].set_ylabel(r"$\dot{\theta}$ ref.(rad/s)")
+        ax[4].set_xlabel(r"k")
+    ax[0].legend(loc="lower right")
+    for a in ax.ravel():
+        a.grid(ls="--")
+    ax[0].set_ylabel(r"$\theta$ (rad)")
+    ax[1].set_ylabel(r"$\dot{\theta}$ (rad/s)")
+    ax[2].set_ylabel(r"$\tau$ (pct)")
+    fig.suptitle(f"{koopman} prediction")
+    fig.savefig(traj_plot_path)
+    # Plot trajectory errors
+    fig, ax = plt.subplots(meas.shape[0], 1, sharex=True)
+    for i in range(meas.shape[0]):
+        ax[i].plot(meas[i, :] - X[i, :])
+    for a in ax.ravel():
+        a.grid(ls="--")
+    ax[0].set_ylabel(r"$\Delta\theta$ (rad)")
+    ax[1].set_ylabel(r"$\Delta\dot{\theta}$ (rad/s)")
+    ax[2].set_ylabel(r"$\Delta\tau$ (pct)")
+    if koopman == "koopman":
+        ax[3].set_ylabel(r"$\Delta\sin{\theta}$")
+        ax[3].set_xlabel(r"k")
+    else:
+        ax[2].set_xlabel(r"k")
+    fig.suptitle(f"{koopman} error")
+    fig.savefig(err_plot_path)
+    # Plot trajectory error FFTs
+    f = scipy.fft.rfftfreq(meas.shape[1], t_step)
+    fft_err = scipy.fft.rfft(meas - X, norm="forward")
+    fig, ax = plt.subplots(meas.shape[0], 1, sharex=True)
+    for i in range(meas.shape[0]):
+        ax[i].plot(f, np.abs(fft_err[i, :]))
+    for a in ax.ravel():
+        a.grid(ls="--")
+    ax[0].set_ylabel(r"$\Delta\theta$ (rad)")
+    ax[1].set_ylabel(r"$\Delta\dot{\theta}$ (rad/s)")
+    ax[2].set_ylabel(r"$\Delta\tau$ (pct)")
+    if koopman == "koopman":
+        ax[3].set_ylabel(r"$\Delta\sin{\theta}$")
+        ax[3].set_xlabel(r"$f$ (Hz)")
+    else:
+        ax[2].set_xlabel(r"$f$ (Hz)")
+    fig.savefig(fft_plot_path)
+    
+    
+    
 def action_synthesize_observer(
     dataset_path: pathlib.Path,
     models_path: pathlib.Path,
