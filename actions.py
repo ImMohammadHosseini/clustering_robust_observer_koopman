@@ -768,7 +768,6 @@ def action_compute_residuals(
     df.attrs["f"] = f
     joblib.dump(df, residuals_path)
 
-#TODO
 def action_generate_uncertainty_weights_for_cluster_models_min_residual(
     cluster_residuals_path: pathlib.Path,
     cluster_nominal_min_residual_path: pathlib.Path,
@@ -1005,27 +1004,24 @@ def action_generate_uncertainty_weights(
     }
     joblib.dump(data, uncertainty_path)
 
-def action_synthesize_cluster_observer(
-    clusters_path: pathlib.Path,
+def action_synthesize_cluster_observer_design_phase(
     cluster_models_path: pathlib.Path,
     cluster_uncertainty_path: pathlib.Path,
     cluster_observer_path: pathlib.Path,
     cluster_weight_plot_path: pathlib.Path,
-    cluster_traj_plot_path: pathlib.Path,
-    cluster_err_plot_path: pathlib.Path,
-    cluster_fft_plot_path: pathlib.Path,
+    clustering_no: int,
+    center_no: int,
     koopman: str,
 ):
     cluster_observer_path.parent.mkdir(parents=True, exist_ok=True)
-    #dataset = joblib.load(dataset_path)
-    clusters = joblib.load(clusters_path)
+    
     cluster_models = joblib.load(cluster_models_path)
     cluster_uncertainty = joblib.load(cluster_uncertainty_path)
     t_step = cluster_models.attrs["t_step"]
-    cluster_no = cluster_uncertainty["clustering_no"]
-    center_no = cluster_uncertainty["center_no"]#TODO
     # Results dictionary
     results = {}
+    results['clustering_no']=clustering_no
+    results['center_no']=center_no
     # Generalized plant weights
     if koopman == "koopman":
         W_p = control.StateSpace([], [], [], np.diag([1, 1, 1, 0]), dt=t_step)
@@ -1052,14 +1048,11 @@ def action_synthesize_cluster_observer(
     # Get nominal model and Koopman pipeline
     P_0_ = control.StateSpace(
         *cluster_models.loc[
-            (cluster_models["clustering_no"] == cluster_no) & 
+            (cluster_models["clustering_no"] == clustering_no) & 
             (cluster_models["center_no"] == center_no), "state_space"
         ].item()
-    )#TODO
-    kp = cluster_models.loc[
-        (cluster_models["clustering_no"] == cluster_no) & 
-        (cluster_models["center_no"] == center_no), "koopman_pipeline"
-    ].item()#TODO
+    )
+    
     # Update ``C`` matrix
     if koopman == "koopman":
         P_0 = control.StateSpace(
@@ -1226,7 +1219,38 @@ def action_synthesize_cluster_observer(
     results["K"] = (K.A, K.B, K.C, K.D, t_step)
     results["P"] = (P_0.A, P_0.B, P_0.C, P_0.D, t_step)
     results["synthesis_info"] = info
+    joblib.dump(results, cluster_observer_path)
+
+#TODO
+def action_combine_uncertainties_observations():    
+def action_synthesize_cluster_observer_test_phase(
+    dataset_path: pathlib.Path,
+    cluster_split_info: pathlib.Path,
+    #clusters_path: pathlib.Path,
+    cluster_models_path: pathlib.Path,
+    #cluster_uncertainty_path: pathlib.Path,
+    #cluster_observer_path: pathlib.Path,
+    cluster_weight_plot_path: pathlib.Path,
+    #cluster_traj_plot_path: pathlib.Path,
+    #cluster_err_plot_path: pathlib.Path,
+    #cluster_fft_plot_path: pathlib.Path,
+    clustering_no: int,
+    center_no: int,
+    koopman: str,
+):
     # Load dataset to test observer
+    #dataset = joblib.load(dataset_path)
+    #clusters = joblib.load(clusters_path)
+    dataset = joblib.load(dataset_path)
+    with cluster_split_info.open('r') as f:
+        split_info = json.load(f)
+        
+    
+    kp = cluster_models.loc[
+        (cluster_models["clustering_no"] == clustering_no) & 
+        (cluster_models["center_no"] == center_no), "koopman_pipeline"
+    ].item()#TODO
+    
     dataset_sn_noload = dataset.loc[
         (dataset["serial_no"] == nom_sn) & (~dataset["load"])
     ]
@@ -1363,8 +1387,8 @@ def action_synthesize_cluster_observer(
     else:
         ax[2].set_xlabel(r"$f$ (Hz)")
     fig.savefig(fft_plot_path)
-    # Save results
-    joblib.dump(results, observer_path)
+    
+    
     
 def action_synthesize_observer(
     dataset_path: pathlib.Path,
