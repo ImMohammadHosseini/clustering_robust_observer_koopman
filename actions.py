@@ -22,6 +22,7 @@ import tf_cover
 from tslearn.utils import to_time_series_dataset
 from tslearn.clustering import TimeSeriesKMeans
 from tslearn.barycenters import dtw_barycenter_averaging
+from tslearn.metrics import dtw
 
 # Number of training episodes
 N_TRAIN = 18
@@ -1221,173 +1222,207 @@ def action_synthesize_cluster_observer_design_phase(
     results["synthesis_info"] = info
     joblib.dump(results, cluster_observer_path)
 
+
+def action_combine_uncertainties_observations(
+    cluster_uncertainties_path: pathlib.Path,
+    cluster_observers_path: pathlib.Path,
+    cluster_uncertainty_path: pathlib.Path,
+    cluster_observer_path: pathlib.Path,
+    clustering_nums: int,
+    k: int,
+):
+    cluster_uncertainty_path.parent.mkdir(parents=True, exist_ok=True)
+    cluster_observer_path.parent.mkdir(parents=True, exist_ok=True)
+    uncertainty_df = []
+    observer_df = []
+    for cl in range(clustering_nums):
+        for c in range (k):
+            uncertainty_df.append(joblib.load(cluster_uncertainties_path.joinpath(
+                "cluster_uncertainty_cl_"+str(cl)+"_center_"+str(c)+".pickle")))
+            observer_df.append(joblib.load(cluster_observers_path.joinpath(
+                "cluster_observer_cl_"+str(cl)+"_center_"+str(c)+".pickle")))
+            
+    joblib.dump(pandas.DataFrame(uncertainty_df), cluster_uncertainty_path) 
+    joblib.dump(pandas.DataFrame(observer_df), cluster_observer_path)  
+   
 #TODO
-def action_combine_uncertainties_observations():    
 def action_synthesize_cluster_observer_test_phase(
     dataset_path: pathlib.Path,
-    cluster_split_info: pathlib.Path,
-    #clusters_path: pathlib.Path,
+    cluster_split_info_path: pathlib.Path,
+    cluster_centers_path: pathlib.Path,
     cluster_models_path: pathlib.Path,
-    #cluster_uncertainty_path: pathlib.Path,
-    #cluster_observer_path: pathlib.Path,
-    cluster_weight_plot_path: pathlib.Path,
-    #cluster_traj_plot_path: pathlib.Path,
-    #cluster_err_plot_path: pathlib.Path,
-    #cluster_fft_plot_path: pathlib.Path,
-    clustering_no: int,
-    center_no: int,
+    cluster_uncertainty_path: pathlib.Path,
+    cluster_observer_path: pathlib.Path,
+    cluster_traj_plot_path: pathlib.Path,
+    cluster_err_plot_path: pathlib.Path,
+    cluster_fft_plot_path: pathlib.Path,
+    clustering_feats: list,
+    K: int,
     koopman: str,
 ):
-    # Load dataset to test observer
-    #dataset = joblib.load(dataset_path)
-    #clusters = joblib.load(clusters_path)
+    # Load dataset to test cluster observer
     dataset = joblib.load(dataset_path)
-    with cluster_split_info.open('r') as f:
-        split_info = json.load(f)
+    cluster_models = joblib.load(cluster_models_path)
+    t_step = cluster_models.attrs["t_step"]
+    cluster_centers = joblib.load(cluster_centers_path)
+    cluster_observer = joblib.load(cluster_observer_path)
+    with cluster_split_info_path.open('r') as f:
+        cluster_split_info = json.load(f)
         
-    
-    kp = cluster_models.loc[
-        (cluster_models["clustering_no"] == clustering_no) & 
-        (cluster_models["center_no"] == center_no), "koopman_pipeline"
-    ].item()#TODO
-    
-    dataset_sn_noload = dataset.loc[
-        (dataset["serial_no"] == nom_sn) & (~dataset["load"])
-    ]
-    X = dataset_sn_noload[
-        [
-            "episode",
-            "joint_pos",
-            "joint_vel",
-            "joint_trq",
-            "target_joint_pos",
-            "target_joint_vel",
-        ]
-    ]
-    X_valid_ = X.loc[X["episode"] >= N_TRAIN].to_numpy()
-    X_valid = pykoop.split_episodes(
-        X_valid_,
-        episode_feature=True,
-    )[0][1]
-    # Lift measurements (for linear model this will do nothing)
-    meas = kp.lift_state(X_valid[:, :3], episode_feature=False).T
-    inpt = X_valid[:, 3:5].T
-    t = np.arange(inpt.shape[1]) * t_step
-    # Form closed-loop system to check stability
-    A_cl = np.block(
-        [
-            [
-                P_0.A - P_0.B @ K.D @ P_0.C,
-                P_0.B @ K.C,
-            ],
-            [
-                -K.B @ P_0.C,
-                K.A,
-            ],
-        ]
-    )
-    evs = scipy.linalg.eigvals(A_cl)
-    violation = np.max(np.abs(evs)) - 1
-    if np.any(np.abs(evs) >= 1):
-        raise RuntimeError(f"Unstable closed-loop by {violation}.")
-    # Check stability with all off-nominal models
-    for i, model in models.groupby(by=["serial_no", "load"]):
-        A, B, _, _, _ = model["state_space"].item()
-        A_cl = np.block(
-            [
-                [
-                    A - B @ K.D @ P_0.C,
-                    B @ K.C,
-                ],
-                [
-                    -K.B @ P_0.C,
-                    K.A,
-                ],
+    #10 random test episodes from train serial numbers
+    serial_nos=list(np.random.choice(cluster_split_info["train"]["serial_numbers"],5, replace=False))
+    serial_nos+=list(np.random.choice(cluster_split_info["test"]["serial_numbers"],5))
+    episodes=list(np.random.choice(cluster_split_info["test"]["episodes"],5))
+    episodes+=list(np.random.choice(20,5, replace=False))
+    loads=np.random.choice([True, False],10)
+    for test_no, serial_no, epiosde, load in enumerate(zip(serial_nos, episodes, loads)):
+        for cl_no, cl_feats in enumerate(clustering_feats):
+            centers = cluster_centers.loc[(cluster_centers["clustering_no"]==cl_no)]
+            new_data = dataset.loc[
+                (dataset["serial_no"] == serial_no) &
+                (dataset["episode"] == epiosde) &
+                (dataset["load"] == load)
             ]
-        )
-        evs = scipy.linalg.eigvals(A_cl)
-        violation = np.max(np.abs(evs)) - 1
-        if np.any(np.abs(evs) >= 1):
-            raise RuntimeError(f"{i} unstable closed-loop by {violation}.")
-    # Simulate observer
-    X = np.zeros((P_0.nstates, t.shape[0]))
-    X[:, [0]] = kp.lift_state(np.zeros((1, 3)), episode_feature=False).T
-    Xc = np.zeros((K.nstates, t.shape[0]))
-    for k in range(1, t.shape[0] + 1):
-        # Compute error first since 0 has no D matrix
-        err = P_0.C @ meas[:, k - 1] - P_0.C @ X[:, k - 1]
-        # Compute control output
-        u = K.C @ Xc[:, k - 1] + K.D @ err
-        if k < X.shape[1]:
-            # Update plant with control input
-            if koopman == "linear":
-                X[:, k] = P_0.A @ X[:, k - 1] + P_0.B @ (inpt[:, k - 1] + u)
+            distances = [dtw(new_data[cl_feats], centers.loc[(centers["center_no"]==k)]
+                             [cl_feats]) for k in K]
+            assigned_cluster = np.argmin(distances)
+            
+            kp = cluster_models.loc[
+                (cluster_models["clustering_no"] == cl_no) & 
+                (cluster_models["center_no"] == assigned_cluster), "koopman_pipeline"
+            ].item()
+            observer = cluster_observer.loc[
+                (cluster_models["clustering_no"] == cl_no) & 
+                (cluster_models["center_no"] == assigned_cluster)]
+            X = new_data[
+                [
+                    "joint_pos",
+                    "joint_vel",
+                    "joint_trq",
+                    "target_joint_pos",
+                    "target_joint_vel",
+                ]
+            ]
+            X_valid = X.to_numpy()
+            # Lift measurements (for linear model this will do nothing)
+            meas = kp.lift_state(X_valid[:, :3], episode_feature=False).T
+            inpt = X_valid[:, 3:5].T
+            t = np.arange(inpt.shape[1]) * t_step
+            # Form closed-loop system to check stability
+            A_cl = np.block(
+                [
+                    [
+                        observer['P'].item()[0]-observer['P'].item()[1]@observer['K'].item()[3]@observer['P'].item()[2],
+                        observer['P'].item()[1] @ observer['K'].item()[2],
+                    ],
+                    [
+                        -observer['K'].item()[1] @ observer['P'].item()[2],
+                        observer['K'].item()[0],
+                    ],
+                ]
+            )
+            evs = scipy.linalg.eigvals(A_cl)
+            violation = np.max(np.abs(evs)) - 1
+            if np.any(np.abs(evs) >= 1):
+                raise RuntimeError(f"Unstable closed-loop by {violation}.")
+            # Check stability with all off-nominal models
+            # for i, model in models.groupby(by=["serial_no", "load"]):
+            #     A, B, _, _, _ = model["state_space"].item()
+            #     A_cl = np.block(
+            #         [
+            #             [
+            #                 A - B @ K.D @ P_0.C,
+            #                 B @ K.C,
+            #             ],
+            #             [
+            #                 -K.B @ P_0.C,
+            #                 K.A,
+            #             ],
+            #         ]
+            #     )
+            #     evs = scipy.linalg.eigvals(A_cl)
+            #     violation = np.max(np.abs(evs)) - 1
+            #     if np.any(np.abs(evs) >= 1):
+            #         raise RuntimeError(f"{i} unstable closed-loop by {violation}.")
+            # Simulate observer
+            X = np.zeros((control.StateSpace(*observer['P'].item()).nstates, t.shape[0]))
+            X[:, [0]] = kp.lift_state(np.zeros((1, 3)), episode_feature=False).T
+            Xc = np.zeros((K.nstates, t.shape[0]))
+            for k in range(1, t.shape[0] + 1):
+                # Compute error first since 0 has no D matrix
+                err = observer['P'].item()[2] @ meas[:, k - 1] - observer['P'].item()[2]@ X[:, k - 1]
+                # Compute control output
+                u = K.C @ Xc[:, k - 1] + K.D @ err
+                if k < X.shape[1]:
+                    # Update plant with control input
+                    if koopman == "linear":
+                        X[:, k] = observer['P'].item()[0] @ X[:, k - 1] + observer['P'].item()[1] @ (inpt[:, k - 1] + u)
+                    else:
+                        Xt_ret = kp.retract_state(X[:, [k - 1]].T, episode_feature=False)
+                        X_rl = kp.lift_state(Xt_ret, episode_feature=False).T.ravel()
+                        X[:, k] = observer['P'].item()[0] @ X_rl + observer['P'].item()[1] @ (inpt[:, k - 1] + u)
+                    # Update controller
+                    Xc[:, k] = K.A @ Xc[:, k - 1] + K.B @ err
+            # Plot trajectories
+            fig, ax = plt.subplots(meas.shape[0] + inpt.shape[0], 1, sharex=True)
+            for i in range(meas.shape[0]):
+                ax[i].plot(meas[i, :], label="True")
+                ax[i].plot(X[i, :], "--", label="Estimate")
+            if koopman == "koopman":
+                ax[4].plot(inpt[0, :])
+                ax[5].plot(inpt[1, :])
+                ax[3].set_ylabel(r"$\sin{\theta}$")
+                ax[4].set_ylabel(r"$\theta$ ref. (rad)")
+                ax[5].set_ylabel(r"$\dot{\theta}$ ref.(rad/s)")
+                ax[5].set_xlabel(r"k")
             else:
-                Xt_ret = kp.retract_state(X[:, [k - 1]].T, episode_feature=False)
-                X_rl = kp.lift_state(Xt_ret, episode_feature=False).T.ravel()
-                X[:, k] = P_0.A @ X_rl + P_0.B @ (inpt[:, k - 1] + u)
-            # Update controller
-            Xc[:, k] = K.A @ Xc[:, k - 1] + K.B @ err
-    # Plot trajectories
-    fig, ax = plt.subplots(meas.shape[0] + inpt.shape[0], 1, sharex=True)
-    for i in range(meas.shape[0]):
-        ax[i].plot(meas[i, :], label="True")
-        ax[i].plot(X[i, :], "--", label="Estimate")
-    if koopman == "koopman":
-        ax[4].plot(inpt[0, :])
-        ax[5].plot(inpt[1, :])
-        ax[3].set_ylabel(r"$\sin{\theta}$")
-        ax[4].set_ylabel(r"$\theta$ ref. (rad)")
-        ax[5].set_ylabel(r"$\dot{\theta}$ ref.(rad/s)")
-        ax[5].set_xlabel(r"k")
-    else:
-        ax[3].plot(inpt[0, :])
-        ax[4].plot(inpt[1, :])
-        ax[3].set_ylabel(r"$\theta$ ref. (rad)")
-        ax[4].set_ylabel(r"$\dot{\theta}$ ref.(rad/s)")
-        ax[4].set_xlabel(r"k")
-    ax[0].legend(loc="lower right")
-    for a in ax.ravel():
-        a.grid(ls="--")
-    ax[0].set_ylabel(r"$\theta$ (rad)")
-    ax[1].set_ylabel(r"$\dot{\theta}$ (rad/s)")
-    ax[2].set_ylabel(r"$\tau$ (pct)")
-    fig.suptitle(f"{koopman} prediction")
-    fig.savefig(traj_plot_path)
-    # Plot trajectory errors
-    fig, ax = plt.subplots(meas.shape[0], 1, sharex=True)
-    for i in range(meas.shape[0]):
-        ax[i].plot(meas[i, :] - X[i, :])
-    for a in ax.ravel():
-        a.grid(ls="--")
-    ax[0].set_ylabel(r"$\Delta\theta$ (rad)")
-    ax[1].set_ylabel(r"$\Delta\dot{\theta}$ (rad/s)")
-    ax[2].set_ylabel(r"$\Delta\tau$ (pct)")
-    if koopman == "koopman":
-        ax[3].set_ylabel(r"$\Delta\sin{\theta}$")
-        ax[3].set_xlabel(r"k")
-    else:
-        ax[2].set_xlabel(r"k")
-    fig.suptitle(f"{koopman} error")
-    fig.savefig(err_plot_path)
-    # Plot trajectory error FFTs
-    f = scipy.fft.rfftfreq(meas.shape[1], t_step)
-    fft_err = scipy.fft.rfft(meas - X, norm="forward")
-    fig, ax = plt.subplots(meas.shape[0], 1, sharex=True)
-    for i in range(meas.shape[0]):
-        ax[i].plot(f, np.abs(fft_err[i, :]))
-    for a in ax.ravel():
-        a.grid(ls="--")
-    ax[0].set_ylabel(r"$\Delta\theta$ (rad)")
-    ax[1].set_ylabel(r"$\Delta\dot{\theta}$ (rad/s)")
-    ax[2].set_ylabel(r"$\Delta\tau$ (pct)")
-    if koopman == "koopman":
-        ax[3].set_ylabel(r"$\Delta\sin{\theta}$")
-        ax[3].set_xlabel(r"$f$ (Hz)")
-    else:
-        ax[2].set_xlabel(r"$f$ (Hz)")
-    fig.savefig(fft_plot_path)
-    
+                ax[3].plot(inpt[0, :])
+                ax[4].plot(inpt[1, :])
+                ax[3].set_ylabel(r"$\theta$ ref. (rad)")
+                ax[4].set_ylabel(r"$\dot{\theta}$ ref.(rad/s)")
+                ax[4].set_xlabel(r"k")
+            ax[0].legend(loc="lower right")
+            for a in ax.ravel():
+                a.grid(ls="--")
+            ax[0].set_ylabel(r"$\theta$ (rad)")
+            ax[1].set_ylabel(r"$\dot{\theta}$ (rad/s)")
+            ax[2].set_ylabel(r"$\tau$ (pct)")
+            fig.suptitle(f"{koopman} prediction")
+            fig.savefig(cluster_traj_plot_path.joinpath(str(test_no)+".pickle"))
+            # Plot trajectory errors
+            fig, ax = plt.subplots(meas.shape[0], 1, sharex=True)
+            for i in range(meas.shape[0]):
+                ax[i].plot(meas[i, :] - X[i, :])
+            for a in ax.ravel():
+                a.grid(ls="--")
+            ax[0].set_ylabel(r"$\Delta\theta$ (rad)")
+            ax[1].set_ylabel(r"$\Delta\dot{\theta}$ (rad/s)")
+            ax[2].set_ylabel(r"$\Delta\tau$ (pct)")
+            if koopman == "koopman":
+                ax[3].set_ylabel(r"$\Delta\sin{\theta}$")
+                ax[3].set_xlabel(r"k")
+            else:
+                ax[2].set_xlabel(r"k")
+            fig.suptitle(f"{koopman} error")
+            fig.savefig(cluster_err_plot_path.joinpath(str(test_no)+".pickle"))
+
+            # Plot trajectory error FFTs
+            f = scipy.fft.rfftfreq(meas.shape[1], t_step)
+            fft_err = scipy.fft.rfft(meas - X, norm="forward")
+            fig, ax = plt.subplots(meas.shape[0], 1, sharex=True)
+            for i in range(meas.shape[0]):
+                ax[i].plot(f, np.abs(fft_err[i, :]))
+            for a in ax.ravel():
+                a.grid(ls="--")
+            ax[0].set_ylabel(r"$\Delta\theta$ (rad)")
+            ax[1].set_ylabel(r"$\Delta\dot{\theta}$ (rad/s)")
+            ax[2].set_ylabel(r"$\Delta\tau$ (pct)")
+            if koopman == "koopman":
+                ax[3].set_ylabel(r"$\Delta\sin{\theta}$")
+                ax[3].set_xlabel(r"$f$ (Hz)")
+            else:
+                ax[2].set_xlabel(r"$f$ (Hz)")
+            fig.savefig(cluster_fft_plot_path.joinpath(str(test_no)+".pickle"))
     
     
 def action_synthesize_observer(
