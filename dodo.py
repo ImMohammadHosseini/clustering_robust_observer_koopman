@@ -39,7 +39,7 @@ def task_one_step_clustering():
     """Task to perform time series clustering using DTW with K-means."""
     
     preprocessed_dataset = WD.joinpath("build", "dataset.pickle")
-    clusters = WD.joinpath("build", "DTW_K_means_clusters.pickle")
+    cluster_centers = WD.joinpath("build", "DTW_K_means_clusters.pickle")
     cluster_preds = WD.joinpath("build", "cluster_preds.pickle")
     cluster_split_info = WD.joinpath("build", "cluster_split_info.pickle")
     
@@ -49,7 +49,7 @@ def task_one_step_clustering():
                 actions.action_one_step_DTW_K_means_clustering,
                 (
                     preprocessed_dataset,
-                    clusters,
+                    cluster_centers,
                     cluster_preds,
                     cluster_split_info,
                     K,
@@ -58,24 +58,24 @@ def task_one_step_clustering():
             )
         ],
         "file_dep": [preprocessed_dataset],
-        "targets": [clusters, cluster_preds, cluster_split_info],
+        "targets": [cluster_centers, cluster_preds, cluster_split_info],
         "clean": True,
     }
 
 def task_compute_cluster_phase():
-    clusters_path = WD.joinpath("build", "DTW_K_means_clusters.pickle")
+    cluster_centers = WD.joinpath("build", "DTW_K_means_clusters.pickle")
     cluster_phase = WD.joinpath("build", "cluster_phase.pickle")
     return {
         "actions": [
             (
                 actions.action_compute_cluster_phase,
                 (
-                    clusters_path,
+                    cluster_centers,
                     cluster_phase,
                 ),
             )
         ],
-        "file_dep": [clusters_path],
+        "file_dep": [cluster_centers],
         "targets": [cluster_phase],
         "clean": True,
     }
@@ -100,7 +100,7 @@ def task_compute_phase():
     }
 
 def task_cluster_id_models():
-    clusters_path = WD.joinpath("build", "DTW_K_means_clusters.pickle")
+    cluster_centers = WD.joinpath("build", "DTW_K_means_clusters.pickle")
     cluster_phase = WD.joinpath("build", "cluster_phase.pickle")
     cluster_models_linear = WD.joinpath("build", "cluster_models_linear.pickle")
     yield {
@@ -108,10 +108,10 @@ def task_cluster_id_models():
         "actions": [
             (
                 actions.action_cluster_id_models,
-                (clusters_path, cluster_phase, cluster_models_linear, "linear"),
+                (cluster_centers, cluster_phase, cluster_models_linear, "linear"),
             )
         ],
-        "file_dep": [clusters_path, cluster_phase],
+        "file_dep": [cluster_centers, cluster_phase],
         "targets": [cluster_models_linear],
         "clean": True,
     }
@@ -121,10 +121,10 @@ def task_cluster_id_models():
         "actions": [
             (
                 actions.action_cluster_id_models,
-                (clusters_path, cluster_phase, cluster_models_koopman, "koopman"),
+                (cluster_centers, cluster_phase, cluster_models_koopman, "koopman"),
             )
         ],
-        "file_dep": [clusters_path, cluster_phase],
+        "file_dep": [cluster_centers, cluster_phase],
         "targets": [cluster_models_koopman],
         "clean": True,
     }
@@ -316,13 +316,13 @@ def task_generate_uncertainty_weights_for_cluster_models():
     for cl in range(CLUSTERING_NUM):
         for c in range (K):
             cluster_uncertainty_koopman = WD.joinpath(
-                "build", "cl_un/koopman/cluster_uncertainty_cl_"+str(cl)+"_center_"+str(c)+"_koopman.pickle"
+                "build", "cl_un/koopman/cluster_uncertainty_cl_"+str(cl)+"_center_"+str(c)+".pickle"
             )
             cluster_uncertainty_mimo_koopman = WD.joinpath(
-                "build", "cl_un/koopman/cluster_uncertainty_mimo_cl_"+str(cl)+"_center_"+str(c)+"_koopman.png"
+                "build", "cl_un/koopman/cluster_uncertainty_mimo_cl_"+str(cl)+"_center_"+str(c)+".png"
             )
             cluster_uncertainty_msv_koopman = WD.joinpath(
-                "build", "cl_un/koopman/cluster_uncertainty_msv_"+str(cl)+"_center_"+str(c)+"_koopman.png"
+                "build", "cl_un/koopman/cluster_uncertainty_msv_"+str(cl)+"_center_"+str(c)+".png"
             )
     
             yield {
@@ -353,13 +353,13 @@ def task_generate_uncertainty_weights_for_cluster_models():
             
             
             cluster_uncertainty_linear = WD.joinpath(
-                "build", "cl_un/linear/cluster_uncertainty_cl_"+str(cl)+"_center_"+str(c)+"_linear.pickle"
+                "build", "cl_un/linear/cluster_uncertainty_cl_"+str(cl)+"_center_"+str(c)+".pickle"
             )
             cluster_uncertainty_mimo_linear = WD.joinpath(
-                "build", "cl_un/linear/cluster_uncertainty_mimo_cl_"+str(cl)+"_center_"+str(c)+"_linear.png"
+                "build", "cl_un/linear/cluster_uncertainty_mimo_cl_"+str(cl)+"_center_"+str(c)+".png"
             )
             cluster_uncertainty_msv_linear = WD.joinpath(
-                "build", "cl_un/linear/cluster_uncertainty_msv_"+str(cl)+"_center_"+str(c)+"_linear.png"
+                "build", "cl_un/linear/cluster_uncertainty_msv_"+str(cl)+"_center_"+str(c)+".png"
             )
             yield {
                 "name": "linear_noload",
@@ -538,23 +538,19 @@ def task_generate_uncertainty_weights():
         "clean": True,
     }
 
-#TODO
-def task_synthesize_cluster_observer():
-    
-    #clusters_path = WD.joinpath("build", "DTW_K_means_clusters.pickle")
-    
+def task_synthesize_cluster_observer_design_phase():    
     cluster_models_linear = WD.joinpath("build", "cluster_models_linear.pickle")
     cluster_models_koopman = WD.joinpath("build", "cluster_models_koopman.pickle")
     for cl in range(CLUSTERING_NUM):
         for c in range (K):
             cluster_uncertainty_linear = WD.joinpath(
-                "build", "cl_un/linear/cluster_uncertainty_cl_"+str(cl)+"_center_"+str(c)+"_linear.pickle"
+                "build", "cl_un/linear/cluster_uncertainty_cl_"+str(cl)+"_center_"+str(c)+".pickle"
             )
             cluster_observer_linear = WD.joinpath(
-                "build", "cl_ob/linear/cluster_observer_cl_"+str(cl)+"_center_"+str(c)+"_linear.pickle"
+                "build", "cl_ob/linear/cluster_observer_cl_"+str(cl)+"_center_"+str(c)+".pickle"
             )
             cluster_weight_plot_linear = WD.joinpath(
-                "build", "cl_ob/linear/cluster_observer_weight_cl_"+str(cl)+"_center_"+str(c)+"_linear.png"
+                "build", "cl_ob/linear/cluster_observer_weight_cl_"+str(cl)+"_center_"+str(c)+".png"
             )
             yield {
                 "name": "linear",
@@ -580,13 +576,13 @@ def task_synthesize_cluster_observer():
                 "clean": True,
             }
             cluster_uncertainty_koopman = WD.joinpath(
-                "build", "cl_un/koopman/cluster_uncertainty_cl_"+str(cl)+"_center_"+str(c)+"_koopman.pickle"
+                "build", "cl_un/koopman/cluster_uncertainty_cl_"+str(cl)+"_center_"+str(c)+".pickle"
             )
             cluster_observer_koopman = WD.joinpath(
-                "build", "cl_ob/koopman/cluster_observer_cl_"+str(cl)+"_center_"+str(c)+"_koopman.pickle"
+                "build", "cl_ob/koopman/cluster_observer_cl_"+str(cl)+"_center_"+str(c)+".pickle"
             )
             cluster_weight_plot_koopman = WD.joinpath(
-                "build", "cl_ob/koopman/cluster_observer_weight_cl_"+str(cl)+"_center_"+str(c)+"_koopman.png"
+                "build", "cl_ob/koopman/cluster_observer_weight_cl_"+str(cl)+"_center_"+str(c)+".png"
             )
             yield {
                 "name": "koopman",
@@ -612,26 +608,153 @@ def task_synthesize_cluster_observer():
                 "clean": True,
             }
             
-            
+def task_combine_uncertainties_observer():
+    cluster_uncertainties_linear = WD.joinpath("build/cl_un/linear/")
+    cluster_observers_linear = WD.joinpath("build/cl_ob/linear/")
+    cluster_uncertainty_linear = WD.joinpath("build", "cluster_uncertainty_linear.pickle")
+    cluster_observer_linear = WD.joinpath("build", "cluster_observer_linear.pickle")
+
+    yield {
+        "name": "linear",
+        "actions": [
+            (
+                actions.action_combine_uncertainties_observations,
+                (
+                    cluster_uncertainties_linear,
+                    cluster_observers_linear,
+                    cluster_uncertainty_linear,
+                    cluster_observer_linear,
+                    CLUSTERING_NUM,
+                    K,
+                ),
+            )
+        ],
+        "file_dep": [cluster_uncertainties_linear, cluster_observers_linear],
+        "targets": [
+            cluster_uncertainty_linear,
+            cluster_observer_linear
+        ],
+        "clean": True,
+    }
     
-    c
+    cluster_uncertainties_koopman = WD.joinpath("build/cl_un/koopman/")
+    cluster_observers_koopman = WD.joinpath("build/cl_ob/koopman/")
+    cluster_uncertainty_koopman = WD.joinpath("build", "cluster_uncertainty_koopman.pickle")
+    cluster_observer_koopman = WD.joinpath("build", "cluster_observer_koopman.pickle")
+
+    yield {
+        "name": "koopman",
+        "actions": [
+            (
+                actions.action_combine_uncertainties_observations,
+                (
+                    cluster_uncertainties_koopman,
+                    cluster_observers_koopman,
+                    cluster_uncertainty_koopman,
+                    cluster_observer_koopman,
+                    CLUSTERING_NUM,
+                    K,
+                ),
+            )
+        ],
+        "file_dep": [cluster_uncertainties_koopman, cluster_observers_koopman],
+        "targets": [
+            cluster_uncertainty_koopman,
+            cluster_observer_koopman
+        ],
+        "clean": True,
+    }
     
-    
-    cluster_models_path: pathlib.Path,
-    cluster_uncertainty_path: pathlib.Path,
-    cluster_observer_path: pathlib.Path,
-    cluster_weight_plot_path: pathlib.Path,
-    #cluster_traj_plot_path: pathlib.Path,
-    #cluster_err_plot_path: pathlib.Path,
-    #cluster_fft_plot_path: pathlib.Path,
-    clustering_no: int,
-    center_no: int,
-    koopman: str,
+
+def task_synthesize_cluster_observer_test_phase():
     
     
     dataset = WD.joinpath("build", "dataset.pickle")
-    
     cluster_split_info = WD.joinpath("build", "cluster_split_info.pickle")
+    cluster_centers = WD.joinpath("build", "DTW_K_means_clusters.pickle")
+    cluster_models_linear = WD.joinpath("build", "cluster_models_linear.pickle")
+    cluster_uncertainty_linear = WD.joinpath("build", "cluster_uncertainty_linear.pickle")
+    cluster_observer_linear = WD.joinpath("build", "cluster_observer_linear.pickle")
+    cluster_traj_plot_linear = WD.joinpath("build/cluster_observer_traj_linear")
+    cluster_err_plot_linear = WD.joinpath("build/cluster_observer_err_linear")
+    cluster_fft_plot_linear = WD.joinpath("build/cluster_observer_fft_linear")
+    yield {
+        "name": "linear",
+        "actions": [
+            (
+                actions.action_synthesize_cluster_observer_test_phase,
+                (
+                    dataset,
+                    cluster_split_info,
+                    cluster_centers,
+                    cluster_models_linear,
+                    cluster_uncertainty_linear,
+                    cluster_observer_linear,
+                    cluster_traj_plot_linear,
+                    cluster_err_plot_linear,
+                    cluster_fft_plot_linear,
+                    FEATURES_TO_CLUSTER,
+                    K,
+                    "linear",
+                ),
+            )
+        ],
+        "file_dep": [dataset,
+                     cluster_split_info,
+                     cluster_centers,
+                     cluster_models_linear,
+                     cluster_uncertainty_linear,
+                     cluster_observer_linear,
+        ],
+        "targets": [
+            cluster_traj_plot_linear,
+            cluster_err_plot_linear,
+            cluster_fft_plot_linear,
+        ],
+        "clean": True,
+    }
+    
+    cluster_models_koopman = WD.joinpath("build", "cluster_models_koopman.pickle")
+    cluster_uncertainty_koopman = WD.joinpath("build", "cluster_uncertainty_koopman.pickle")
+    cluster_observer_koopman = WD.joinpath("build", "cluster_observer_koopman.pickle")
+    cluster_traj_plot_koopman = WD.joinpath("build/cluster_observer_traj_koopman")
+    cluster_err_plot_koopman = WD.joinpath("build/cluster_observer_err_koopman")
+    cluster_fft_plot_koopman = WD.joinpath("build/cluster_observer_fft_koopman")
+    yield {
+        "name": "koopman",
+        "actions": [
+            (
+                actions.action_synthesize_cluster_observer_test_phase,
+                (
+                    dataset,
+                    cluster_split_info,
+                    cluster_centers,
+                    cluster_models_koopman,
+                    cluster_uncertainty_koopman,
+                    cluster_observer_koopman,
+                    cluster_traj_plot_koopman,
+                    cluster_err_plot_koopman,
+                    cluster_fft_plot_koopman,
+                    FEATURES_TO_CLUSTER,
+                    K,
+                    "koopman",
+                ),
+            )
+        ],
+        "file_dep": [dataset,
+                     cluster_split_info,
+                     cluster_centers,
+                     cluster_models_koopman,
+                     cluster_uncertainty_koopman,
+                     cluster_observer_koopman,
+        ],
+        "targets": [
+            cluster_traj_plot_koopman,
+            cluster_err_plot_koopman,
+            cluster_fft_plot_koopman,
+        ],
+        "clean": True,
+    }
 
 
 def task_synthesize_observer():
