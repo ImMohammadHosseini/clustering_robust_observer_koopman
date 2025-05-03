@@ -13,7 +13,7 @@ import actions
 # Directory containing ``dodo.py``
 WD = pathlib.Path(__file__).parent.resolve()
 K = 6
-FEATURES_TO_CLUSTER = [['joint_vel', 'target_joint_vel']]
+FEATURES_TO_CLUSTER = ['joint_vel', 'target_joint_vel']
 CLUSTERING_NUM = len(FEATURES_TO_CLUSTER)
 
 def task_preprocess_experiments():
@@ -35,11 +35,13 @@ def task_preprocess_experiments():
         "clean": True,
     }
 
+
+
 def task_one_step_clustering():
     """Task to perform time series clustering using DTW with K-means."""
     
     preprocessed_dataset = WD.joinpath("build", "dataset.pickle")
-    cluster_centers = WD.joinpath("build", "DTW_K_means_clusters.pickle")
+    cluster_centers = WD.joinpath("build", "first_DTW_K_means_clusters.pickle")
     cluster_preds = WD.joinpath("build", "cluster_preds.pickle")
     cluster_split_info = WD.joinpath("build", "cluster_split_info.pickle")
     
@@ -59,6 +61,37 @@ def task_one_step_clustering():
         ],
         "file_dep": [preprocessed_dataset],
         "targets": [cluster_centers, cluster_preds, cluster_split_info],
+        "clean": True,
+    }
+
+def task_comput_center_for_other_timeseries():
+    
+    preprocessed_dataset = WD.joinpath("build", "dataset.pickle")
+    first_cluster_centers = WD.joinpath("build", "first_DTW_K_means_clusters.pickle")
+    cluster_centers = WD.joinpath("build", "DTW_K_means_clusters.pickle")
+    cluster_preds = WD.joinpath("build", "cluster_preds.pickle")
+    cluster_split_info = WD.joinpath("build", "cluster_split_info.pickle")
+    
+    return {
+        "actions": [
+            (
+                actions.action_comput_center_for_other_timeseries,
+                (
+                    preprocessed_dataset,
+                    first_cluster_centers,
+                    cluster_preds,
+                    cluster_split_info,
+                    cluster_centers,
+                    K,
+                    FEATURES_TO_CLUSTER
+                ),
+            )
+        ],
+        "file_dep": [preprocessed_dataset,
+                     first_cluster_centers,
+                     cluster_preds,
+                     cluster_split_info,],
+        "targets": [cluster_centers],
         "clean": True,
     }
 
@@ -326,7 +359,7 @@ def task_generate_uncertainty_weights_for_cluster_models():
             )
     
             yield {
-                "name": "koopman",
+                "name": "koopman_one"+str(cl)+str(c),
                 "actions": [
                     (
                         actions.action_generate_uncertainty_weights_for_cluster_models,
@@ -362,7 +395,7 @@ def task_generate_uncertainty_weights_for_cluster_models():
                 "build", "cl_un/linear/cluster_uncertainty_msv_"+str(cl)+"_center_"+str(c)+".png"
             )
             yield {
-                "name": "linear_noload",
+                "name": "linear_one"+str(cl)+str(c),
                 "actions": [
                     (
                         actions.action_generate_uncertainty_weights_for_cluster_models_min_residual,
@@ -553,7 +586,7 @@ def task_synthesize_cluster_observer_design_phase():
                 "build", "cl_ob/linear/cluster_observer_weight_cl_"+str(cl)+"_center_"+str(c)+".png"
             )
             yield {
-                "name": "linear",
+                "name": "linear"+str(cl)+str(c),
                 "actions": [
                     (
                         actions.action_synthesize_cluster_observer_design_phase,
@@ -585,7 +618,7 @@ def task_synthesize_cluster_observer_design_phase():
                 "build", "cl_ob/koopman/cluster_observer_weight_cl_"+str(cl)+"_center_"+str(c)+".png"
             )
             yield {
-                "name": "koopman",
+                "name": "koopman"+str(cl)+str(c),
                 "actions": [
                     (
                         actions.action_synthesize_cluster_observer_design_phase,

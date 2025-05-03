@@ -23,7 +23,8 @@ from tslearn.utils import to_time_series_dataset
 from tslearn.clustering import TimeSeriesKMeans
 from tslearn.barycenters import dtw_barycenter_averaging
 from tslearn.metrics import dtw
-
+from sklearn.utils import shuffle
+from copy import deepcopy
 # Number of training episodes
 N_TRAIN = 18
 
@@ -140,7 +141,7 @@ def action_preprocess_experiments(
 
 def action_one_step_DTW_K_means_clustering(
     dataset_path: pathlib.Path,
-    clusters_path: pathlib.Path,
+    first_clusters_path: pathlib.Path,
     cluster_preds_path: pathlib.Path,
     cluster_split_info: pathlib.Path,
     k: int,
@@ -148,79 +149,92 @@ def action_one_step_DTW_K_means_clustering(
     
 ):
     cluster_split_info.parent.mkdir(parents=True, exist_ok=True)
-    max_iter=3
-    t_step = 1e-3
     dataset = joblib.load(dataset_path)
-    time_series = ['joint_pos', 'joint_vel', 'joint_trq', 'target_joint_pos', 
-                   'target_joint_vel']
+    max_iter=1
+    t_step = 1e-3
+    epoch = 10
+    batch_size = 64
+    
     serial_nos = np.unique(dataset['serial_no'])
     test_dataset_serial_no=np.random.choice(np.setdiff1d(serial_nos,['000000']), 2, replace=False)
     train_dataset_serial_no=np.setdiff1d(serial_nos, test_dataset_serial_no)
     episodes=np.unique(dataset['episode'])
     test_episodes=np.random.choice(episodes, 2, replace=False)
     train_episodes=np.setdiff1d(episodes, test_episodes)
-    
+        
     gp_dataset = dataset[(dataset['serial_no'].isin(train_dataset_serial_no)) & 
-                     (dataset['episode'].isin(train_episodes))].groupby(by=["serial_no", "load", "episode"])
+                     (dataset['episode'].isin(train_episodes))].groupby(by=[
+                         "serial_no", "load", "episode"])
     #gp_dataset = dataset.groupby(by=["serial_no", "load", "episode"])
     gp_info=np.array(list(gp_dataset.groups.keys()))
-    wh_data = []
-    n_wh_data = []
-    other_center_parts = []
-    for cluster_base in features_to_cluster:
-        ocp=list(set(time_series) - set(cluster_base))
-        other_center_parts.append(ocp)
-        ts_data=[]
-        for part in cluster_base:
-            x=[]
-            for i, dataset_ep in gp_dataset:
-                x.append(dataset_ep[part].to_list())
-            ts_data.append(to_time_series_dataset(x))
-        wh_data.append(np.concatenate(ts_data,2))
-        n_ts_data=[]
-        for part in ocp:
-            x=[]
-            for i, dataset_ep in gp_dataset:
-                x.append(dataset_ep[part].to_list())
-            ts_data.append(to_time_series_dataset(x))
-        n_wh_data.append(np.concatenate(n_ts_data,2))
+    #wh_data = []
+    #n_wh_data = []
+    #for cluster_base in features_to_cluster:
+    ts_data=[]
+    for part in features_to_cluster:
+        x=[]
+        for i, dataset_ep in gp_dataset:
+            x.append(dataset_ep[part].to_list())
+        ts_data.append(to_time_series_dataset(x))
+    #wh_data.append(np.concatenate(ts_data,2))
+    ts_data=np.concatenate(ts_data,2)
     
-
-    km = TimeSeriesKMeans(n_clusters=k, verbose=True, max_iter=max_iter, 
-                          metric='dtw', random_state=0, n_jobs=4)
+    #n_wh_data.append(np.concatenate(n_ts_data,2))
+    #end for
+    del dataset_ep
+    del dataset
+    del gp_dataset
+    
+    km = TimeSeriesKMeans(n_clusters=k, verbose=True, metric='dtw',  max_iter=max_iter,
+                          max_iter_barycenter=1,
+                          random_state=0, n_jobs=10) 
+    X_shuffled = shuffle(ts_data)
+    batch = X_shuffled[:batch_size]
+    km.fit(batch)
+    
+    for e in range(epoch):
+        X_shuffled = shuffle(ts_data)
+        print('epoch#:', e)
+        for i in range(0, len(ts_data), batch_size):
+            print('batch#:', i, i + batch_size)
+            batch = X_shuffled[i:i + batch_size] 
+            new_km = TimeSeriesKMeans(n_clusters=k, verbose=True, metric='dtw', max_iter=max_iter,
+                                      max_iter_barycenter=1,
+                                      n_jobs=10, init=km.cluster_centers_) 
+            new_km.fit(batch)
+            km=deepcopy(new_km)
+        
+    y_pred=km.predict(ts_data)
+    
     y_preds_dict={"serial_no":[], "load":[], "episode":[], "clustering_no":[],
                   "center_no":[]}
-    centers_dict={'k':[], 't':[], 'joint_pos':[], 'joint_vel':[], 'joint_trq':[], 
-                  'target_joint_pos':[], 'target_joint_vel':[], 'clustering_no':[],
+    centers_dict={'k':[], 't':[], 'clustering_no':[],
                   'center_no':[]}
-    for i, cluster_base in enumerate(zip(features_to_cluster, wh_data)):
+    #for i, cluster_base in enumerate(zip(features_to_cluster, wh_data)):
         
-        y_pred=km.fit_predict(cluster_base[1])
+    
+    
+    y_preds_dict["serial_no"].extend(gp_info[:,0])
+    y_preds_dict["load"].extend(gp_info[:,1])
+    y_preds_dict["episode"].extend(gp_info[:,2])
+    y_preds_dict['clustering_no'].extend([0]*y_pred.shape[0])
+    y_preds_dict['center_no'].extend(y_pred)
 
-        y_preds_dict["serial_no"].extend(gp_info[:,0])
-        y_preds_dict["load"].extend(gp_info[:,1])
-        y_preds_dict["episode"].extend(gp_info[:,2])
-        y_preds_dict['clustering_no'].extend([i]*y_pred.shape[0])
-        y_preds_dict['center_no'].extend(y_pred.shape)
-
-        for center_num in range(k):
-            size=km.cluster_centers_[center_num].shape[0]
-            k=np.arange(0,size)
-            centers_dict['k'].extend(k)
-            t=k/t_step
-            centers_dict['t'].extend(t)
-            centers_dict['clustering_no'].extend([i]*size)
-            centers_dict['center_no'].extend([center_num]*size)
-            for j, center_part_name in enumerate(cluster_base[0]):
-                centers_dict[center_part_name].extend(km.cluster_centers_[center_num][:,j])
-            for p, center_name in enumerate(other_center_parts[i]):
-                cl_mems = np.where(y_pred == center_num)[0]
-                centers_dict[center_name].extend(dtw_barycenter_averaging(
-                    n_wh_data[i][cl_mems][:,:,p], max_iter=max_iter)[:,0])
-                
+    for center_num in range(k):
+        size=km.cluster_centers_[center_num].shape[0]
+        k=np.arange(0,size)
+        centers_dict['k'].extend(k)
+        t=k/t_step
+        centers_dict['t'].extend(t)
+        centers_dict['clustering_no'].extend([i]*size)
+        centers_dict['center_no'].extend([center_num]*size)
+        for j, center_part_name in enumerate(features_to_cluster):
+            centers_dict[center_part_name]=[]
+            centers_dict[center_part_name].extend(km.cluster_centers_[center_num][:,j])
+            
     df = pandas.DataFrame(centers_dict)
     df.attrs["t_step"] = t_step
-    joblib.dump(df, clusters_path)
+    joblib.dump(df, first_clusters_path)
     
     df = pandas.DataFrame(y_preds_dict)
     joblib.dump(df, cluster_preds_path)
@@ -238,8 +252,62 @@ def action_one_step_DTW_K_means_clustering(
     
     with cluster_split_info.open('w') as f:
         json.dump(split_info, f)
-    
 
+def action_comput_center_for_other_timeseries (
+    dataset_path: pathlib.Path,
+    first_clusters_path: pathlib.Path,
+    cluster_preds_path: pathlib.Path,
+    cluster_split_info_path: pathlib.Path,
+    clusters_path: pathlib.Path,
+    k: int,
+    features_to_cluster: list,
+):
+    max_iter=1
+    t_step = 1e-3
+    dataset = joblib.load(dataset_path)
+    clusters = joblib.load(first_clusters_path)
+    centers_dict = clusters.to_dict()
+    cluster_preds = joblib.load(cluster_preds_path)
+    #y_preds_dict = cluster_preds.to_dict()
+    with cluster_split_info_path.open('r') as f:
+        cluster_split_info = json.load(f)
+    gp_dataset = dataset[(dataset['serial_no'].isin(cluster_split_info["train"][
+        "serial_numbers"])) & (dataset['episode'].isin(cluster_split_info["train"][
+            "episodes"]))].groupby(by=["serial_no", "load", "episode"])
+    
+    time_series = ['joint_pos', 'joint_vel', 'joint_trq', 'target_joint_pos', 
+                   'target_joint_vel']
+    ocp=list(set(time_series) - set(features_to_cluster))
+
+    n_ts_data=[]
+    for part in ocp:
+        x=[]
+        for i, dataset_ep in gp_dataset:
+            x.append(dataset_ep[part].to_list())
+        n_ts_data.append(to_time_series_dataset(x))   
+    n_ts_data =np.concatenate(n_ts_data,2)
+    #del dataset
+    #del gp_dataset
+    
+    for center_num in range(k):
+        #size=km.cluster_centers_[center_num].shape[0]
+        #k=np.arange(0,size)
+        #centers_dict['k'].extend(k)
+        #t=k/t_step
+        #centers_dict['t'].extend(t)
+        #centers_dict['clustering_no'].extend([i]*size)
+        #centers_dict['center_no'].extend([center_num]*size)
+        
+        for p, center_name in enumerate(ocp):
+            cl_mems = np.where(cluster_preds['center_no'] == center_num)[0]
+            centers_dict[center_name]=[]
+            centers_dict[center_name].extend(dtw_barycenter_averaging(
+                n_ts_data[cl_mems][:,:,p], max_iter=max_iter)[:,0])
+            
+    df = pandas.DataFrame(centers_dict)
+    df.attrs["t_step"] = t_step
+    joblib.dump(df, clusters_path)
+    
 def action_compute_cluster_phase(
     clusters_path: pathlib.Path,
     clusters_phase_path: pathlib.Path,
@@ -3825,3 +3893,6 @@ def _simulate_koopman(
             # Update controller
             Xc[:, k] = K.A @ Xc[:, k - 1] + K.B @ err
     return X.T
+
+
+    
